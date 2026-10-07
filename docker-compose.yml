@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    container_name: subsign-professor-app
+    restart: unless-stopped
+    # Segredos (GEMINI_API_KEY etc.) ficam só no .env do servidor (não versionado).
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - NODE_ENV=production
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
