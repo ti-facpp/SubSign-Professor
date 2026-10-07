@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import nodemailer from 'nodemailer';
 import {
   Prontuario,
   CertisignConfig,
@@ -19,6 +20,123 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '15mb' }));
+
+// --- Envio de e-mails via SMTP ---
+// Sem SMTP_HOST/SMTP_USER/SMTP_PASS o envio continua simulado (desenvolvimento).
+// EMAIL_REDIRECIONAR_PARA desvia todas as mensagens para um único endereço
+// (modo de teste: os dados de exemplo têm e-mails de terceiros).
+const smtpConfigurado = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+const smtpPorta = Number(process.env.SMTP_PORT || 465);
+const emailRemetente = process.env.SMTP_FROM || `SubSign Professor FACPP <${process.env.SMTP_USER}>`;
+const emailRedirecionarPara = (process.env.EMAIL_REDIRECIONAR_PARA || '').trim();
+
+const transporter = smtpConfigurado
+  ? nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: smtpPorta,
+      secure: smtpPorta === 465,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    })
+  : null;
+
+console.log(
+  smtpConfigurado
+    ? `[SMTP] Envio real via ${process.env.SMTP_HOST}:${smtpPorta}` +
+        (emailRedirecionarPara ? ` (modo teste: tudo redirecionado para ${emailRedirecionarPara})` : '')
+    : '[SMTP] Não configurado — envio de e-mails simulado.'
+);
+
+interface ResultadoEnvio {
+  ok: boolean;
+  mensagemId: string;
+  erro?: string;
+}
+
+function escaparHtml(texto: string): string {
+  return String(texto ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Nunca lança: o resultado vira o status do destinatário.
+async function enviarEmail(para: string, assunto: string, html: string): Promise<ResultadoEnvio> {
+  if (!transporter) {
+    return { ok: true, mensagemId: `MSG-SIMULADO-${Date.now()}` };
+  }
+
+  const destino = emailRedirecionarPara || para;
+  const assuntoFinal = emailRedirecionarPara ? `[TESTE → ${para}] ${assunto}` : assunto;
+  const aviso = emailRedirecionarPara
+    ? `<p style="background:#fef3c7;padding:8px;border-radius:4px;font-size:12px">
+         Modo de teste: esta mensagem seria enviada para <b>${escaparHtml(para)}</b>.</p>`
+    : '';
+
+  try {
+    const info = await transporter.sendMail({ from: emailRemetente, to: destino, subject: assuntoFinal, html: aviso + html });
+    return { ok: true, mensagemId: info.messageId };
+  } catch (err) {
+    const erro = err instanceof Error ? err.message : String(err);
+    console.error(`[SMTP] Falha ao enviar para ${destino}: ${erro}`);
+    return { ok: false, mensagemId: '', erro };
+  }
+}
+
+function htmlProntuarioAssinado(p: Prontuario, nomeDestinatario: string): string {
+  const a = p.assinaturaCertisign;
+  return `
+    <div style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px">
+      <h2 style="color:#047857">Prontuário assinado digitalmente</h2>
+      <p>Olá, ${escaparHtml(nomeDestinatario)}.</p>
+      <p>O prontuário abaixo foi validado pelo docente supervisor e assinado digitalmente.</p>
+      <table style="border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:4px 12px 4px 0"><b>Prontuário</b></td><td>${escaparHtml(p.numeroProntuario)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Paciente</b></td><td>${escaparHtml(p.paciente.nome)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Aluno</b></td><td>${escaparHtml(p.aluno.nome)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Disciplina</b></td><td>${escaparHtml(p.disciplina)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Atendimento</b></td><td>${escaparHtml(p.dataAtendimento)} ${escaparHtml(p.horaAtendimento)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Procedimento</b></td><td>${escaparHtml(p.dadosClinicos.procedimentoRealizado)}</td></tr>
+        ${a ? `
+        <tr><td style="padding:4px 12px 4px 0"><b>Assinado por</b></td><td>${escaparHtml(a.titularCertificado)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Data da assinatura</b></td><td>${escaparHtml(new Date(a.dataAssinatura).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }))}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Código de verificação</b></td><td>${escaparHtml(a.codigoVerificacao)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Hash SHA-256</b></td><td style="font-family:monospace;font-size:12px">${escaparHtml(a.hashDocumento)}</td></tr>` : ''}
+      </table>
+      <p style="font-size:12px;color:#64748b;margin-top:24px">Mensagem automática do SubSign Professor — FACPP. Não responda este e-mail.</p>
+    </div>`;
+}
+
+function htmlProntuarioDevolvido(p: Prontuario, motivo: string): string {
+  return `
+    <div style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px">
+      <h2 style="color:#b45309">Prontuário devolvido para correção</h2>
+      <p>Olá, ${escaparHtml(p.aluno.nome)}.</p>
+      <p>O prontuário <b>${escaparHtml(p.numeroProntuario)}</b> (paciente ${escaparHtml(p.paciente.nome)},
+         ${escaparHtml(p.disciplina)}) foi devolvido pelo docente supervisor com o parecer abaixo:</p>
+      <blockquote style="border-left:4px solid #f59e0b;margin:0;padding:8px 12px;background:#fffbeb">${escaparHtml(motivo)}</blockquote>
+      <p>Faça os ajustes e reenvie o prontuário para validação.</p>
+      <p style="font-size:12px;color:#64748b;margin-top:24px">Mensagem automática do SubSign Professor — FACPP. Não responda este e-mail.</p>
+    </div>`;
+}
+
+function assuntoProntuario(p: Prontuario): string {
+  return `Prontuário ${p.numeroProntuario} assinado digitalmente — FACPP`;
+}
+
+async function enviarParaDestinatario(dest: EmailDestinatario, assunto: string, html: string): Promise<void> {
+  const resultado = await enviarEmail(dest.email, assunto, html);
+  dest.tentativas += 1;
+  dest.dataHoraEnvio = new Date().toISOString();
+  if (resultado.ok) {
+    dest.status = 'entregue';
+    dest.mensagemId = resultado.mensagemId;
+    delete dest.erroMotivo;
+  } else {
+    dest.status = 'falha';
+    dest.erroMotivo = resultado.erro;
+  }
+}
 
 // Initial Professores Database
 let professoresDb: ProfessorProfile[] = [
@@ -677,57 +795,33 @@ let prontuariosDb: Prontuario[] = [
 syncEmailsForProfessor('martins1987@gmail.com');
 syncEmailsForProfessor('marcos.silveira@facpp.edu.br');
 
-// Helper to simulate email dispatch logic
-function dispararEmailsProntuario(prontuario: Prontuario): Prontuario {
+// Despacho dos e-mails do prontuário assinado aos 4 destinatários padrão
+async function dispararEmailsProntuario(prontuario: Prontuario): Promise<Prontuario> {
   const agora = new Date().toISOString();
-  const baseCode = Math.floor(10000 + Math.random() * 90000);
 
-  // Standard recipients list
+  const novoDestinatario = (sufixo: string, papel: EmailDestinatario['papel'], nome: string, email: string): EmailDestinatario => ({
+    id: `dest-${prontuario.id}-${sufixo}`,
+    papel,
+    nome,
+    email,
+    status: 'pendente',
+    tentativas: 0,
+  });
+
   const destinatarios: EmailDestinatario[] = [
-    {
-      id: `dest-${prontuario.id}-aluno`,
-      papel: 'aluno',
-      nome: prontuario.aluno.nome,
-      email: prontuario.aluno.email,
-      status: 'entregue',
-      tentativas: 1,
-      dataHoraEnvio: agora,
-      mensagemId: `MSG-FACPP-${baseCode}-ALU`,
-    },
-    {
-      id: `dest-${prontuario.id}-paciente`,
-      papel: 'paciente',
-      nome: prontuario.paciente.nome,
-      email: prontuario.paciente.email,
-      status: 'entregue',
-      tentativas: 1,
-      dataHoraEnvio: agora,
-      mensagemId: `MSG-FACPP-${baseCode}-PAC`,
-    },
-    {
-      id: `dest-${prontuario.id}-coord`,
-      papel: 'coordenacao',
-      nome: `Coordenação Clínica - ${prontuario.disciplina}`,
-      email: 'clinica.odontologia@facpp.edu.br',
-      status: 'entregue',
-      tentativas: 1,
-      dataHoraEnvio: agora,
-      mensagemId: `MSG-FACPP-${baseCode}-COO`,
-    },
-    {
-      id: `dest-${prontuario.id}-same`,
-      papel: 'same_arquivo',
-      nome: 'SAME - Arquivo Central de Prontuários FACPP',
-      email: 'same.prontuarios@facpp.edu.br',
-      status: 'entregue',
-      tentativas: 1,
-      dataHoraEnvio: agora,
-      mensagemId: `MSG-FACPP-${baseCode}-SAM`,
-    },
+    novoDestinatario('aluno', 'aluno', prontuario.aluno.nome, prontuario.aluno.email),
+    novoDestinatario('paciente', 'paciente', prontuario.paciente.nome, prontuario.paciente.email),
+    novoDestinatario('coord', 'coordenacao', `Coordenação Clínica - ${prontuario.disciplina}`, 'clinica.odontologia@facpp.edu.br'),
+    novoDestinatario('same', 'same_arquivo', 'SAME - Arquivo Central de Prontuários FACPP', 'same.prontuarios@facpp.edu.br'),
   ];
 
+  await Promise.all(
+    destinatarios.map((d) => enviarParaDestinatario(d, assuntoProntuario(prontuario), htmlProntuarioAssinado(prontuario, d.nome)))
+  );
+
+  const falhas = destinatarios.filter((d) => d.status === 'falha');
   prontuario.envioEmails = {
-    statusGeral: 'concluido',
+    statusGeral: falhas.length === 0 ? 'concluido' : 'falha_parcial',
     dataDisparo: agora,
     destinatarios,
   };
@@ -737,14 +831,17 @@ function dispararEmailsProntuario(prontuario: Prontuario): Prontuario {
     dataHora: agora,
     autor: 'SubSign Dispatch API (Certisign Post-Sign Engine)',
     acao: 'Disparo de E-mails com Prontuário Assinado',
-    detalhes: `Despacho automático concluído para 4 e-mails cadastrados: Aluno (${prontuario.aluno.email}), Paciente (${prontuario.paciente.email}), Coordenação e SAME.`,
+    detalhes:
+      falhas.length === 0
+        ? `Despacho concluído para 4 e-mails cadastrados: Aluno (${prontuario.aluno.email}), Paciente (${prontuario.paciente.email}), Coordenação e SAME.`
+        : `Despacho com ${falhas.length} falha(s): ${falhas.map((d) => `${d.email} (${d.erroMotivo})`).join('; ')}.`,
   });
 
   return prontuario;
 }
 
 // Helper to sign record via Certisign API
-function assinarComCertisign(prontuario: Prontuario): Prontuario {
+async function assinarComCertisign(prontuario: Prontuario): Promise<Prontuario> {
   const agora = new Date().toISOString();
   const docHash = crypto
     .createHash('sha256')
@@ -841,35 +938,38 @@ app.get('/api/prontuarios/:id', (req: Request, res: Response) => {
 });
 
 // 3. Digital signature via Certisign
-app.post('/api/prontuarios/:id/assinar', (req: Request, res: Response) => {
+app.post('/api/prontuarios/:id/assinar', async (req: Request, res: Response) => {
   const item = prontuariosDb.find((p) => p.id === req.params.id);
   if (!item) {
     return res.status(404).json({ error: 'Prontuário não encontrado' });
   }
 
-  const assinado = assinarComCertisign(item);
+  const assinado = await assinarComCertisign(item);
   res.json({
     sucesso: true,
-    mensagem: 'Prontuário validado e assinado digitalmente com sucesso via Certisign ICP-Brasil. E-mails despachados automaticamente.',
+    mensagem:
+      assinado.envioEmails.statusGeral === 'concluido'
+        ? 'Prontuário validado e assinado digitalmente com sucesso via Certisign ICP-Brasil. E-mails despachados automaticamente.'
+        : 'Prontuário assinado, mas houve falha no envio de parte dos e-mails. Use o reenvio individual.',
     prontuario: assinado,
   });
 });
 
 // 4. Batch digital signature via Certisign
-app.post('/api/prontuarios/assinar-lote', (req: Request, res: Response) => {
+app.post('/api/prontuarios/assinar-lote', async (req: Request, res: Response) => {
   const { ids } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: 'Selecione ao menos um prontuário para assinar em lote' });
   }
 
   const assinados: Prontuario[] = [];
-  ids.forEach((id: string) => {
+  for (const id of ids) {
     const item = prontuariosDb.find((p) => p.id === id);
     if (item && item.status !== 'assinado_certisign') {
-      const assinado = assinarComCertisign(item);
+      const assinado = await assinarComCertisign(item);
       assinados.push(assinado);
     }
-  });
+  }
 
   res.json({
     sucesso: true,
@@ -880,7 +980,7 @@ app.post('/api/prontuarios/assinar-lote', (req: Request, res: Response) => {
 });
 
 // 5. Reject record with supervisor feedback
-app.post('/api/prontuarios/:id/rejeitar', (req: Request, res: Response) => {
+app.post('/api/prontuarios/:id/rejeitar', async (req: Request, res: Response) => {
   const { motivo } = req.body;
   const item = prontuariosDb.find((p) => p.id === req.params.id);
   if (!item) {
@@ -904,21 +1004,23 @@ app.post('/api/prontuarios/:id/rejeitar', (req: Request, res: Response) => {
   });
 
   // Notificar aluno via e-mail sobre a devolução
+  const destAluno: EmailDestinatario = {
+    id: `dest-${item.id}-rej-aluno`,
+    papel: 'aluno',
+    nome: item.aluno.nome,
+    email: item.aluno.email,
+    status: 'pendente',
+    tentativas: 0,
+  };
+  await enviarParaDestinatario(
+    destAluno,
+    `Prontuário ${item.numeroProntuario} devolvido para correção — FACPP`,
+    htmlProntuarioDevolvido(item, motivo)
+  );
   item.envioEmails = {
-    statusGeral: 'falha_parcial',
+    statusGeral: destAluno.status === 'falha' ? 'falha_parcial' : 'concluido',
     dataDisparo: agora,
-    destinatarios: [
-      {
-        id: `dest-${item.id}-rej-aluno`,
-        papel: 'aluno',
-        nome: item.aluno.nome,
-        email: item.aluno.email,
-        status: 'entregue',
-        tentativas: 1,
-        dataHoraEnvio: agora,
-        mensagemId: `MSG-REJEICAO-${Date.now()}`,
-      },
-    ],
+    destinatarios: [destAluno],
   };
 
   res.json({
@@ -929,7 +1031,7 @@ app.post('/api/prontuarios/:id/rejeitar', (req: Request, res: Response) => {
 });
 
 // 6. Manual / Triggered email dispatch
-app.post('/api/prontuarios/:id/enviar-emails', (req: Request, res: Response) => {
+app.post('/api/prontuarios/:id/enviar-emails', async (req: Request, res: Response) => {
   const item = prontuariosDb.find((p) => p.id === req.params.id);
   if (!item) {
     return res.status(404).json({ error: 'Prontuário não encontrado' });
@@ -939,43 +1041,54 @@ app.post('/api/prontuarios/:id/enviar-emails', (req: Request, res: Response) => 
     return res.status(400).json({ error: 'O prontuário precisa estar assinado digitalmente pelo docente para envio dos e-mails oficiais' });
   }
 
-  const atualizado = dispararEmailsProntuario(item);
+  const atualizado = await dispararEmailsProntuario(item);
   res.json({
     sucesso: true,
-    mensagem: 'E-mails despachados com sucesso para os 4 destinatários registrados.',
+    mensagem:
+      atualizado.envioEmails.statusGeral === 'concluido'
+        ? 'E-mails despachados com sucesso para os 4 destinatários registrados.'
+        : 'Houve falha no envio de parte dos e-mails. Use o reenvio individual.',
     envioEmails: atualizado.envioEmails,
   });
 });
 
 // 7. Resend single email
-app.post('/api/emails/:destinatarioId/reenviar', (req: Request, res: Response) => {
+app.post('/api/emails/:destinatarioId/reenviar', async (req: Request, res: Response) => {
   const { destinatarioId } = req.params;
-  let achou = false;
-
-  prontuariosDb.forEach((p) => {
-    const dest = p.envioEmails.destinatarios.find((d) => d.id === destinatarioId);
-    if (dest) {
-      achou = true;
-      dest.status = 'entregue';
-      dest.tentativas += 1;
-      dest.dataHoraEnvio = new Date().toISOString();
-      dest.mensagemId = `MSG-REENVIO-${Date.now()}`;
-      delete dest.erroMotivo;
-
-      p.historico.push({
-        id: `evt-${Date.now()}-resend`,
-        dataHora: new Date().toISOString(),
-        autor: 'SubSign API',
-        acao: `Reenvio individual de e-mail para ${dest.email}`,
-        detalhes: `Tentativa ${dest.tentativas} bem-sucedida.`,
-      });
-    }
-  });
-
-  if (!achou) {
+  const p = prontuariosDb.find((pr) => pr.envioEmails.destinatarios.some((d) => d.id === destinatarioId));
+  const dest = p?.envioEmails.destinatarios.find((d) => d.id === destinatarioId);
+  if (!p || !dest) {
     return res.status(404).json({ error: 'Destinatário não localizado' });
   }
 
+  const html =
+    p.status === 'rejeitado_ajustes' && p.motivoRejeicao
+      ? htmlProntuarioDevolvido(p, p.motivoRejeicao)
+      : htmlProntuarioAssinado(p, dest.nome);
+  const assunto =
+    p.status === 'rejeitado_ajustes'
+      ? `Prontuário ${p.numeroProntuario} devolvido para correção — FACPP`
+      : assuntoProntuario(p);
+  await enviarParaDestinatario(dest, assunto, html);
+
+  if (p.envioEmails.destinatarios.every((d) => d.status !== 'falha')) {
+    p.envioEmails.statusGeral = 'concluido';
+  }
+
+  p.historico.push({
+    id: `evt-${Date.now()}-resend`,
+    dataHora: new Date().toISOString(),
+    autor: 'SubSign API',
+    acao: `Reenvio individual de e-mail para ${dest.email}`,
+    detalhes:
+      dest.status === 'falha'
+        ? `Tentativa ${dest.tentativas} falhou: ${dest.erroMotivo}`
+        : `Tentativa ${dest.tentativas} bem-sucedida.`,
+  });
+
+  if (dest.status === 'falha') {
+    return res.status(502).json({ error: `Falha no reenvio: ${dest.erroMotivo}` });
+  }
   res.json({ sucesso: true, mensagem: 'E-mail reenviado com sucesso.' });
 });
 
