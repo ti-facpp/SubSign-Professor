@@ -17,11 +17,15 @@ FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
+# PDFs enviados para assinatura (volume subsign_data no docker-compose)
+ENV DATA_DIR=/app/data
 
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server.mjs ./
+
+RUN mkdir -p /app/data && chown node:node /app/data
 
 USER node
 EXPOSE 3000

@@ -3,7 +3,9 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import fs from 'fs';
 import nodemailer from 'nodemailer';
+import { PDFDocument, PDFFont, StandardFonts, rgb } from 'pdf-lib';
 import {
   Prontuario,
   CertisignConfig,
@@ -13,6 +15,7 @@ import {
   AuditoriaEvento,
   ProfessorProfile,
   EmailNotificacaoRecebida,
+  DocumentoPdf,
 } from './src/types/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1482,6 +1485,315 @@ app.post('/api/caixa-email/sincronizar', (req: Request, res: Response) => {
     ).length,
     totalNaoLidos: allProfEmails.filter((e) => !e.lido).length,
   });
+});
+
+// --- PDFs avulsos enviados pelo professor para assinatura ---
+// Ficam em disco (DATA_DIR/documentos) para sobreviver a reinícios do contêiner;
+// o índice é um JSON regravado inteiro a cada alteração.
+const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, 'data');
+const DOCS_DIR = path.join(DATA_DIR, 'documentos');
+const DOCS_INDICE = path.join(DATA_DIR, 'documentos.json');
+const TAMANHO_MAXIMO_PDF = 25 * 1024 * 1024;
+
+fs.mkdirSync(DOCS_DIR, { recursive: true });
+
+let documentosDb: DocumentoPdf[] = [];
+try {
+  documentosDb = JSON.parse(fs.readFileSync(DOCS_INDICE, 'utf8'));
+} catch {
+  documentosDb = [];
+}
+console.log(`[Documentos] ${documentosDb.length} PDF(s) carregado(s) de ${DATA_DIR}`);
+
+function salvarIndiceDocumentos() {
+  const temp = `${DOCS_INDICE}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(documentosDb, null, 2));
+  fs.renameSync(temp, DOCS_INDICE);
+}
+
+function caminhoDocumento(id: string, versao: 'original' | 'assinado') {
+  return path.join(DOCS_DIR, versao === 'assinado' ? `${id}-assinado.pdf` : `${id}.pdf`);
+}
+
+function sha256(dados: Uint8Array): string {
+  return crypto.createHash('sha256').update(dados).digest('hex');
+}
+
+// O id vem da URL e vira nome de arquivo: só aceita o formato gerado aqui.
+function buscarDocumento(id: string): DocumentoPdf | undefined {
+  if (!/^doc-[a-z0-9-]+$/.test(id)) return undefined;
+  return documentosDb.find((d) => d.id === id);
+}
+
+// As fontes padrão do PDF só codificam WinAnsi; troca o que não couber por '?'.
+function textoPdf(fonte: PDFFont, texto: string): string {
+  return Array.from(texto)
+    .map((ch) => {
+      try {
+        fonte.encodeText(ch);
+        return ch;
+      } catch {
+        return '?';
+      }
+    })
+    .join('');
+}
+
+function quebrarLinhas(fonte: PDFFont, texto: string, tamanho: number, larguraMax: number): string[] {
+  const linhas: string[] = [];
+  let atual = '';
+  for (const parte of texto.split(/(\s+)/)) {
+    const tentativa = atual + parte;
+    if (atual && fonte.widthOfTextAtSize(tentativa, tamanho) > larguraMax) {
+      linhas.push(atual.trimEnd());
+      atual = parte.trimStart();
+    } else {
+      atual = tentativa;
+    }
+    // Palavra maior que a linha (ex.: hash): quebra por caractere.
+    while (fonte.widthOfTextAtSize(atual, tamanho) > larguraMax) {
+      let corte = atual.length - 1;
+      while (corte > 1 && fonte.widthOfTextAtSize(atual.slice(0, corte), tamanho) > larguraMax) corte--;
+      linhas.push(atual.slice(0, corte));
+      atual = atual.slice(corte);
+    }
+  }
+  if (atual.trim()) linhas.push(atual.trimEnd());
+  return linhas;
+}
+
+function formatarDataHora(iso: string): string {
+  return new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+}
+
+// Carimba cada página com uma faixa de assinatura e anexa uma página de manifesto.
+async function carimbarPdf(
+  original: Uint8Array,
+  doc: DocumentoPdf,
+  assinatura: NonNullable<DocumentoPdf['assinatura']>
+): Promise<Uint8Array> {
+  const pdf = await PDFDocument.load(original);
+  const fonte = await pdf.embedFont(StandardFonts.Helvetica);
+  const negrito = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const verde = rgb(0.016, 0.471, 0.341);
+  const cinza = rgb(0.278, 0.333, 0.412);
+
+  const paginas = pdf.getPages();
+  const total = paginas.length + 1;
+  const dataTexto = formatarDataHora(assinatura.dataAssinatura);
+
+  paginas.forEach((pagina, i) => {
+    const { width } = pagina.getSize();
+    const margem = 24;
+    const largura = width - margem * 2;
+    pagina.drawRectangle({
+      x: margem, y: 8, width: largura, height: 22,
+      color: rgb(0.925, 0.992, 0.961), borderColor: verde, borderWidth: 0.6, opacity: 0.92,
+    });
+    const linha1 = textoPdf(fonte, `Assinado eletronicamente por ${assinatura.signatarioNome} (${assinatura.signatarioRegistro}) em ${dataTexto}`);
+    const linha2 = textoPdf(fonte, `SubSign FACPP · Código de verificação ${assinatura.codigoVerificacao} · Página ${i + 1} de ${total}`);
+    const tamanho = Math.min(6.5, (6.5 * (largura - 12)) / Math.max(fonte.widthOfTextAtSize(linha1, 6.5), 1));
+    pagina.drawText(linha1, { x: margem + 6, y: 21, size: tamanho, font: fonte, color: verde });
+    pagina.drawText(linha2, { x: margem + 6, y: 12.5, size: tamanho, font: fonte, color: cinza });
+  });
+
+  // Página final: manifesto de assinatura
+  const manifesto = pdf.addPage([595.28, 841.89]);
+  const larguraTexto = 595.28 - 120;
+  let y = 780;
+  manifesto.drawRectangle({ x: 0, y: 800, width: 595.28, height: 41.89, color: verde });
+  manifesto.drawText('MANIFESTO DE ASSINATURA ELETRÔNICA', { x: 60, y: 815, size: 14, font: negrito, color: rgb(1, 1, 1) });
+
+  const campos: [string, string][] = [
+    ['Documento', doc.nomeOriginal],
+    ['Páginas do original', String(doc.totalPaginas)],
+    ['Enviado por', doc.enviadoPor],
+    ['Data do envio', formatarDataHora(doc.dataEnvio)],
+    ['Hash SHA-256 do original', doc.hashOriginal],
+    ['Signatário', assinatura.signatarioNome],
+    ['E-mail do signatário', assinatura.signatarioEmail],
+    ['Registro profissional', assinatura.signatarioRegistro],
+    ['Data e hora da assinatura', `${dataTexto} (horário de Brasília)`],
+    ['Carimbo do tempo', assinatura.carimboTempoACT],
+    ['Código de verificação', assinatura.codigoVerificacao],
+  ];
+
+  for (const [rotulo, valor] of campos) {
+    manifesto.drawText(textoPdf(negrito, rotulo.toUpperCase()), { x: 60, y, size: 8, font: negrito, color: cinza });
+    y -= 14;
+    for (const linha of quebrarLinhas(fonte, textoPdf(fonte, valor || '—'), 11, larguraTexto)) {
+      manifesto.drawText(linha, { x: 60, y, size: 11, font: fonte, color: rgb(0.06, 0.09, 0.16) });
+      y -= 15;
+    }
+    y -= 8;
+  }
+
+  y -= 6;
+  const aviso =
+    'Este documento foi assinado eletronicamente pelo signatário acima por meio do SubSign FACPP. ' +
+    'Cada página recebeu uma faixa com o nome do signatário, a data e o código de verificação. ' +
+    'Para conferir a integridade do conteúdo, compare o hash SHA-256 do arquivo original com o valor registrado neste manifesto.';
+  for (const linha of quebrarLinhas(fonte, textoPdf(fonte, aviso), 9, larguraTexto)) {
+    manifesto.drawText(linha, { x: 60, y, size: 9, font: fonte, color: cinza });
+    y -= 12;
+  }
+  manifesto.drawText(textoPdf(fonte, `SubSign FACPP · Página ${total} de ${total}`), { x: 60, y: 30, size: 8, font: fonte, color: cinza });
+
+  pdf.setModificationDate(new Date(assinatura.dataAssinatura));
+  return pdf.save();
+}
+
+function enviarArquivoPdf(res: Response, caminho: string, nome: string, baixar: boolean) {
+  const nomeAscii = nome.normalize('NFD').replace(/[^\x20-\x7e]/g, '').replace(/["\\]/g, '');
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader(
+    'Content-Disposition',
+    `${baixar ? 'attachment' : 'inline'}; filename="${nomeAscii}"; filename*=UTF-8''${encodeURIComponent(nome)}`
+  );
+  fs.createReadStream(caminho).pipe(res);
+}
+
+// 16. Listar PDFs enviados
+app.get('/api/documentos', (_req: Request, res: Response) => {
+  const documentos = [...documentosDb].sort((a, b) => b.dataEnvio.localeCompare(a.dataEnvio));
+  res.json({
+    total: documentos.length,
+    totalPendentes: documentos.filter((d) => d.status === 'aguardando_assinatura').length,
+    documentos,
+  });
+});
+
+// 17. Upload de um PDF (corpo binário; nome no cabeçalho X-Nome-Arquivo)
+app.post(
+  '/api/documentos',
+  express.raw({ type: 'application/pdf', limit: TAMANHO_MAXIMO_PDF }),
+  async (req: Request, res: Response) => {
+    const dados: unknown = req.body;
+    if (!Buffer.isBuffer(dados) || dados.length === 0) {
+      return res.status(400).json({ error: 'Nenhum arquivo PDF recebido.' });
+    }
+    if (dados.subarray(0, 1024).indexOf('%PDF-') === -1) {
+      return res.status(415).json({ error: 'O arquivo enviado não é um PDF válido.' });
+    }
+
+    let totalPaginas: number;
+    try {
+      totalPaginas = (await PDFDocument.load(dados)).getPageCount();
+    } catch (err) {
+      const protegido = err instanceof Error && /encrypt/i.test(err.message);
+      return res.status(422).json({
+        error: protegido
+          ? 'O PDF está protegido por senha. Remova a proteção e envie novamente.'
+          : 'Não foi possível ler o PDF. O arquivo pode estar corrompido.',
+      });
+    }
+
+    const decodificar = (valor: unknown, padrao: string) => {
+      try {
+        return typeof valor === 'string' && valor ? decodeURIComponent(valor) : padrao;
+      } catch {
+        return padrao;
+      }
+    };
+    let nomeOriginal = path.basename(decodificar(req.headers['x-nome-arquivo'], 'documento.pdf')).slice(0, 200);
+    if (!/\.pdf$/i.test(nomeOriginal)) nomeOriginal += '.pdf';
+
+    const doc: DocumentoPdf = {
+      id: `doc-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      nomeOriginal,
+      tamanhoBytes: dados.length,
+      totalPaginas,
+      dataEnvio: new Date().toISOString(),
+      enviadoPor: decodificar(req.headers['x-enviado-por'], 'Professor não identificado').slice(0, 200),
+      hashOriginal: sha256(dados),
+      status: 'aguardando_assinatura',
+    };
+
+    fs.writeFileSync(caminhoDocumento(doc.id, 'original'), dados);
+    documentosDb.push(doc);
+    salvarIndiceDocumentos();
+
+    res.status(201).json({ sucesso: true, mensagem: `"${doc.nomeOriginal}" enviado para assinatura.`, documento: doc });
+  }
+);
+
+// 18. Visualizar/baixar o PDF (original ou assinado)
+app.get('/api/documentos/:id/arquivo', (req: Request, res: Response) => {
+  const doc = buscarDocumento(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Documento não encontrado.' });
+
+  const querAssinado = req.query.versao === 'assinado';
+  if (querAssinado && doc.status !== 'assinado') {
+    return res.status(409).json({ error: 'Este documento ainda não foi assinado.' });
+  }
+  const caminho = caminhoDocumento(doc.id, querAssinado ? 'assinado' : 'original');
+  if (!fs.existsSync(caminho)) return res.status(404).json({ error: 'Arquivo não localizado no armazenamento.' });
+
+  const nome = querAssinado ? doc.nomeOriginal.replace(/\.pdf$/i, '_assinado.pdf') : doc.nomeOriginal;
+  enviarArquivoPdf(res, caminho, nome, req.query.download === '1');
+});
+
+// 19. Assinar um PDF enviado
+app.post('/api/documentos/:id/assinar', async (req: Request, res: Response) => {
+  const doc = buscarDocumento(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Documento não encontrado.' });
+  if (doc.status === 'assinado') return res.status(409).json({ error: 'Este documento já foi assinado.' });
+
+  const { pin, signatario } = req.body || {};
+  if (typeof pin !== 'string' || pin.trim().length < 4) {
+    return res.status(400).json({ error: 'Informe o PIN do certificado (mínimo de 4 dígitos).' });
+  }
+
+  const texto = (valor: unknown, padrao: string) =>
+    typeof valor === 'string' && valor.trim() ? valor.trim().slice(0, 200) : padrao;
+  const agora = new Date().toISOString();
+  const assinatura: NonNullable<DocumentoPdf['assinatura']> = {
+    dataAssinatura: agora,
+    signatarioNome: texto(signatario?.nome, certisignConfig.titularNome),
+    signatarioEmail: texto(signatario?.email, ''),
+    signatarioRegistro: texto(signatario?.registro, certisignConfig.cro_crm),
+    codigoVerificacao: `SUBSIGN-DOC-${new Date().getFullYear()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+    hashAssinado: '',
+    carimboTempoACT: `${certisignConfig.autoridadeCarimbo} [ACT-${Date.now()}]`,
+  };
+
+  try {
+    const original = fs.readFileSync(caminhoDocumento(doc.id, 'original'));
+    const assinado = await carimbarPdf(original, doc, assinatura);
+    assinatura.hashAssinado = sha256(assinado);
+    fs.writeFileSync(caminhoDocumento(doc.id, 'assinado'), assinado);
+  } catch (err) {
+    console.error(`[Documentos] Falha ao assinar ${doc.id}:`, err);
+    return res.status(500).json({ error: 'Não foi possível gerar o PDF assinado.' });
+  }
+
+  doc.status = 'assinado';
+  doc.assinatura = assinatura;
+  salvarIndiceDocumentos();
+
+  res.json({ sucesso: true, mensagem: `"${doc.nomeOriginal}" assinado com sucesso.`, documento: doc });
+});
+
+// 20. Excluir um PDF enviado
+app.delete('/api/documentos/:id', (req: Request, res: Response) => {
+  const doc = buscarDocumento(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Documento não encontrado.' });
+
+  for (const versao of ['original', 'assinado'] as const) {
+    fs.rmSync(caminhoDocumento(doc.id, versao), { force: true });
+  }
+  documentosDb = documentosDb.filter((d) => d.id !== doc.id);
+  salvarIndiceDocumentos();
+
+  res.json({ sucesso: true, mensagem: `"${doc.nomeOriginal}" excluído.` });
+});
+
+// Upload maior que o limite: devolve JSON em vez da página de erro do Express.
+app.use((err: any, _req: Request, res: Response, next: express.NextFunction) => {
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({ error: `Arquivo excede o limite de ${TAMANHO_MAXIMO_PDF / 1024 / 1024} MB.` });
+  }
+  next(err);
 });
 
 // Setup Vite middleware for development or serve dist in production

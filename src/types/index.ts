@@ -194,3 +194,26 @@ export interface RelatorioConsolidado {
   };
   itens: ItemRelatorio[];
 }
+
+// PDF avulso enviado pelo professor para assinatura (upload manual)
+export interface AssinaturaDocumento {
+  dataAssinatura: string;
+  signatarioNome: string;
+  signatarioEmail: string;
+  signatarioRegistro: string;
+  codigoVerificacao: string;
+  hashAssinado: string;
+  carimboTempoACT: string;
+}
+
+export interface DocumentoPdf {
+  id: string;
+  nomeOriginal: string;
+  tamanhoBytes: number;
+  totalPaginas: number;
+  dataEnvio: string;
+  enviadoPor: string;
+  hashOriginal: string;
+  status: 'aguardando_assinatura' | 'assinado';
+  assinatura?: AssinaturaDocumento;
+}

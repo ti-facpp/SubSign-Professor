@@ -26,12 +26,13 @@ import { NewWebhookSimulatorModal } from './components/NewWebhookSimulatorModal.
 import { OfficialDocumentModal } from './components/OfficialDocumentModal.tsx';
 import { CaixaEmailView } from './components/CaixaEmailView.tsx';
 import { ProfessorLoginModal } from './components/ProfessorLoginModal.tsx';
+import { DocumentosPdfView } from './components/DocumentosPdfView.tsx';
 
 export default function App() {
   const [prontuarios, setProntuarios] = useState<Prontuario[]>([]);
   const [certisignConfig, setCertisignConfig] = useState<CertisignConfig | null>(null);
   const [loading, setLoading] = useState(true);
-  const [currentTab, setCurrentTab] = useState<'caixa_email' | 'prontuarios' | 'relatorio' | 'config'>('caixa_email');
+  const [currentTab, setCurrentTab] = useState<'caixa_email' | 'prontuarios' | 'documentos' | 'relatorio' | 'config'>('caixa_email');
   const [activeStatusFilter, setActiveStatusFilter] = useState('todos');
 
   // Professor Profile & Login State
@@ -45,6 +46,7 @@ export default function App() {
   });
   const [isProfessorLoginOpen, setIsProfessorLoginOpen] = useState(false);
   const [pendingPdfsCount, setPendingPdfsCount] = useState(0);
+  const [pendingDocsCount, setPendingDocsCount] = useState(0);
 
   // Modals
   const [selectedProntuario, setSelectedProntuario] = useState<Prontuario | null>(null);
@@ -105,6 +107,16 @@ export default function App() {
     }
   }, []);
 
+  const fetchDocumentosStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/documentos');
+      const data = await res.json();
+      setPendingDocsCount(data.totalPendentes || 0);
+    } catch (err) {
+      console.error('Erro ao buscar PDFs enviados', err);
+    }
+  }, []);
+
   const fetchEmailStats = useCallback(async (profEmail: string) => {
     try {
       const res = await fetch(`/api/caixa-email?email=${encodeURIComponent(profEmail)}`);
@@ -117,13 +129,13 @@ export default function App() {
 
   const refreshAll = useCallback(async () => {
     setLoading(true);
-    const promises: Promise<any>[] = [fetchProntuarios(), fetchConfig()];
+    const promises: Promise<any>[] = [fetchProntuarios(), fetchConfig(), fetchDocumentosStats()];
     if (currentProfessor?.email) {
       promises.push(fetchEmailStats(currentProfessor.email));
     }
     await Promise.all(promises);
     setLoading(false);
-  }, [fetchProntuarios, fetchConfig, fetchEmailStats, currentProfessor?.email]);
+  }, [fetchProntuarios, fetchConfig, fetchDocumentosStats, fetchEmailStats, currentProfessor?.email]);
 
   useEffect(() => {
     refreshAll();
@@ -204,6 +216,7 @@ export default function App() {
         currentProfessor={currentProfessor}
         pendingCount={pendingCount}
         pendingPdfsCount={pendingPdfsCount}
+        pendingDocsCount={pendingDocsCount}
       />
 
       {/* Main Container */}
@@ -243,6 +256,16 @@ export default function App() {
               onStatusFilterChange={(st) => setActiveStatusFilter(st)}
             />
           </div>
+        )}
+
+        {/* VIEW 2B: UPLOAD DE PDFs AVULSOS PARA ASSINATURA */}
+        {currentTab === 'documentos' && (
+          <DocumentosPdfView
+            currentProfessor={currentProfessor}
+            onRequestLogin={() => setIsProfessorLoginOpen(true)}
+            onToast={showToast}
+            onPendentesChange={setPendingDocsCount}
+          />
         )}
 
         {/* VIEW 3: RELATÓRIO CONSOLIDADO */}

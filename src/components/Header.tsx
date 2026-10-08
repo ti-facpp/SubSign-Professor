@@ -12,12 +12,13 @@ import {
   KeyRound,
   CheckCircle2,
   Building2,
+  UploadCloud,
 } from 'lucide-react';
 import { CertisignConfig, ProfessorProfile } from '../types/index.ts';
 
 interface HeaderProps {
-  currentTab: 'prontuarios' | 'caixa_email' | 'relatorio' | 'config';
-  onSelectTab: (tab: 'prontuarios' | 'caixa_email' | 'relatorio' | 'config') => void;
+  currentTab: 'prontuarios' | 'caixa_email' | 'documentos' | 'relatorio' | 'config';
+  onSelectTab: (tab: 'prontuarios' | 'caixa_email' | 'documentos' | 'relatorio' | 'config') => void;
   onOpenSimulator: () => void;
   onOpenConfig: () => void;
   onOpenProfessorLogin: () => void;
@@ -26,6 +27,7 @@ interface HeaderProps {
   currentProfessor: ProfessorProfile | null;
   pendingCount: number;
   pendingPdfsCount: number;
+  pendingDocsCount: number;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -39,6 +41,7 @@ export const Header: React.FC<HeaderProps> = ({
   currentProfessor,
   pendingCount,
   pendingPdfsCount,
+  pendingDocsCount,
 }) => {
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -118,6 +121,26 @@ export const Header: React.FC<HeaderProps> = ({
               {pendingCount > 0 && (
                 <span className="bg-slate-100 text-slate-700 text-xs px-1.5 py-0.5 rounded-full font-mono">
                   {pendingCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => onSelectTab('documentos')}
+              className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors flex items-center gap-2 ${
+                currentTab === 'documentos'
+                  ? 'bg-emerald-50 text-emerald-800 font-semibold'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+            >
+              <UploadCloud className="w-4 h-4" />
+              <span>Enviar PDF</span>
+              {pendingDocsCount > 0 && (
+                <span
+                  className="bg-amber-100 text-amber-800 text-xs px-1.5 py-0.5 rounded-full font-mono font-semibold"
+                  title={`${pendingDocsCount} PDFs enviados aguardando assinatura`}
+                >
+                  {pendingDocsCount}
                 </span>
               )}
             </button>
@@ -314,6 +337,23 @@ export const Header: React.FC<HeaderProps> = ({
             {pendingCount > 0 && (
               <span className="bg-slate-100 text-slate-700 text-[10px] px-1.5 py-0.2 rounded-full font-mono">
                 {pendingCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => onSelectTab('documentos')}
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              currentTab === 'documentos'
+                ? 'bg-emerald-50 text-emerald-800 font-semibold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+            }`}
+          >
+            <UploadCloud className="w-3.5 h-3.5" />
+            <span>Enviar PDF</span>
+            {pendingDocsCount > 0 && (
+              <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.2 rounded-full font-mono font-semibold">
+                {pendingDocsCount}
               </span>
             )}
           </button>
