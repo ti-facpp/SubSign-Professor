@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Mail, FileText, Clock, CheckCircle2, AlertCircle, Search, RefreshCw, Download, Eye, Paperclip, User, GraduationCap, Loader2 } from 'lucide-react';
+import { Mail, FileText, Clock, CheckCircle2, AlertCircle, Search, RefreshCw, Download, Eye, Paperclip, User, GraduationCap, Loader2, UploadCloud } from 'lucide-react';
 import { api, abrirPdf } from '../api.ts';
 import { Documento, StatusDocumento } from '../types/index.ts';
 import { EnviarAssinadoPanel } from './EnviarAssinadoPanel.tsx';
+import { EnviarAvulsoModal } from './EnviarAvulsoModal.tsx';
 
 interface CaixaViewProps {
+  disciplinaNome: string;
   onToast: (text: string, type?: 'success' | 'info' | 'error') => void;
   onContagem: (aguardando: number) => void;
 }
@@ -37,8 +39,9 @@ const Selo: React.FC<{ status: StatusDocumento }> = ({ status }) => {
   );
 };
 
-export const CaixaView: React.FC<CaixaViewProps> = ({ onToast, onContagem }) => {
+export const CaixaView: React.FC<CaixaViewProps> = ({ disciplinaNome, onToast, onContagem }) => {
   const [documentos, setDocumentos] = useState<Documento[]>([]);
+  const [avulsoAberto, setAvulsoAberto] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [selecionadoId, setSelecionadoId] = useState<string | null>(null);
   const [filtro, setFiltro] = useState<Filtro>('aguardando');
@@ -89,6 +92,16 @@ export const CaixaView: React.FC<CaixaViewProps> = ({ onToast, onContagem }) => 
     [documentos, onContagem]
   );
 
+  const avulsoCriado = (doc: Documento) => {
+    setAvulsoAberto(false);
+    setDocumentos((atual) => [doc, ...atual]);
+    onContagem(documentos.filter((d) => d.status === 'aguardando_assinatura').length + 1);
+    setFiltro('aguardando');
+    setBusca('');
+    setSelecionadoId(doc.id);
+    onToast('PDF recebido. Confira os destinatários e clique em Enviar.', 'info');
+  };
+
   const abrir = (doc: Documento) => {
     setSelecionadoId(doc.id);
     setErroPdf('');
@@ -106,6 +119,17 @@ export const CaixaView: React.FC<CaixaViewProps> = ({ onToast, onContagem }) => 
 
   return (
     <div className="space-y-5">
+      {avulsoAberto && <EnviarAvulsoModal disciplinaNome={disciplinaNome} onFechar={() => setAvulsoAberto(false)} onCriado={avulsoCriado} />}
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => setAvulsoAberto(true)}
+          className="px-3.5 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs flex items-center gap-1.5"
+        >
+          <UploadCloud className="w-4 h-4" /> Enviar PDF assinado avulso
+        </button>
+      </div>
+
       <div className="grid grid-cols-3 gap-3">
         {(
           [
@@ -179,6 +203,11 @@ export const CaixaView: React.FC<CaixaViewProps> = ({ onToast, onContagem }) => 
                 <Mail className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                 <p className="font-semibold text-slate-600">{documentos.length === 0 ? 'Nenhum documento recebido ainda' : 'Nenhum documento neste filtro'}</p>
                 <p className="text-[11px] mt-1">Os documentos chegam aqui assim que o aluno envia pelo app.</p>
+                {documentos.length === 0 && (
+                  <button onClick={() => setAvulsoAberto(true)} className="mt-3 text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 underline">
+                    Tem um PDF já assinado no Adobe? Envie avulso
+                  </button>
+                )}
               </div>
             ) : (
               filtrados.map((d) => (
@@ -197,7 +226,8 @@ export const CaixaView: React.FC<CaixaViewProps> = ({ onToast, onContagem }) => 
                     <span className="text-[10px] text-slate-400 font-mono shrink-0">{formatarData(d.recebidoEm)}</span>
                   </div>
                   <div className="text-[11px] text-slate-500 truncate mt-0.5">
-                    Aluno: {d.alunoNome}
+                    {d.origem === 'avulso' ? 'Avulso' : 'Aluno'}
+                    {d.alunoNome ? `${d.origem === 'avulso' ? ' · ' : ': '}${d.alunoNome}` : ''}
                     {d.numero ? ` · ${d.numero}` : ''}
                   </div>
                   <div className="mt-2 flex items-center justify-between gap-2">
@@ -231,21 +261,26 @@ export const CaixaView: React.FC<CaixaViewProps> = ({ onToast, onContagem }) => 
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                   <div>
-                    <span className="text-slate-400 text-[11px] flex items-center gap-1"><User className="w-3 h-3" /> E-mail do paciente (informado pelo aluno)</span>
+                    <span className="text-slate-400 text-[11px] flex items-center gap-1">
+                      <User className="w-3 h-3" /> E-mail do paciente (informado pelo {selecionado.origem === 'avulso' ? 'professor' : 'aluno'})
+                    </span>
                     <strong className="font-mono text-emerald-800 break-all">{selecionado.pacienteEmail}</strong>
                   </div>
                   <div>
                     <span className="text-slate-400 text-[11px] flex items-center gap-1"><GraduationCap className="w-3 h-3" /> Aluno</span>
-                    <strong className="text-slate-800">{selecionado.alunoNome}</strong>
+                    <strong className="text-slate-800">{selecionado.alunoNome || '—'}</strong>
                     {selecionado.alunoRa && <span className="text-slate-500 font-mono text-[11px]"> (RA {selecionado.alunoRa})</span>}
                   </div>
                 </div>
-                <div className="text-[11px] text-slate-400 font-mono">Recebido em {formatarData(selecionado.recebidoEm)}</div>
+                <div className="text-[11px] text-slate-400 font-mono">
+                  {selecionado.origem === 'avulso' ? 'Enviado avulso em' : 'Recebido em'} {formatarData(selecionado.recebidoEm)}
+                </div>
               </div>
 
               <div className="p-5 bg-emerald-50/40 border-b border-emerald-100 space-y-3">
                 <div className="flex items-center gap-2 text-xs font-bold text-emerald-950 uppercase tracking-wide">
-                  <Paperclip className="w-4 h-4 text-emerald-700" /> 1. Baixe o PDF e assine no Adobe
+                  <Paperclip className="w-4 h-4 text-emerald-700" />
+                  {selecionado.origem === 'avulso' ? 'PDF assinado (envio avulso)' : '1. Baixe o PDF e assine no Adobe'}
                 </div>
                 <div className="bg-white p-4 rounded-xl border border-emerald-200 space-y-3">
                   <div className="flex items-center gap-3">
@@ -261,7 +296,7 @@ export const CaixaView: React.FC<CaixaViewProps> = ({ onToast, onContagem }) => 
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <button onClick={() => mostrarPdf(selecionado, true)} className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg flex items-center gap-1.5">
-                      <Download className="w-3.5 h-3.5" /> Baixar PDF original
+                      <Download className="w-3.5 h-3.5" /> {selecionado.origem === 'avulso' ? 'Baixar PDF' : 'Baixar PDF original'}
                     </button>
                     <button onClick={() => mostrarPdf(selecionado, false)} className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1.5">
                       <Eye className="w-3.5 h-3.5" /> Visualizar

@@ -50,7 +50,8 @@ export const EnviarAssinadoPanel: React.FC<EnviarAssinadoPanelProps> = ({ docume
 
   const pdf = documento.pdfAssinado;
   const enviado = !!pdf?.dataEnvio && !novoUpload;
-  const requerConfirmacao = !!pdf && (pdf.conferencia === 'divergente' || !pdf.temAssinaturaDigital);
+  const avulso = documento.origem === 'avulso';
+  const requerConfirmacao = !!pdf && (pdf.conferencia !== 'identico' || !pdf.temAssinaturaDigital);
 
   const carregarDestinos = useCallback(async () => {
     try {
@@ -183,7 +184,7 @@ export const EnviarAssinadoPanel: React.FC<EnviarAssinadoPanelProps> = ({ docume
           <div key={d.papel} className={`px-3 py-2 text-xs ${d.papel === 'paciente' ? 'bg-emerald-50/50' : ''}`}>
             <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
               {ROTULO_PAPEL[d.papel]}
-              {d.papel === 'paciente' && ' · e-mail informado pelo aluno'}
+              {d.papel === 'paciente' && ` · e-mail informado pelo ${avulso ? 'professor' : 'aluno'}`}
             </div>
             <div className="font-medium text-slate-800 truncate">{d.nome}</div>
             <div className={`font-mono text-[11px] truncate ${d.valido ? 'text-emerald-800' : 'text-rose-700 font-semibold'}`}>{d.email || 'sem e-mail'}</div>
@@ -262,10 +263,16 @@ export const EnviarAssinadoPanel: React.FC<EnviarAssinadoPanelProps> = ({ docume
                       <span>Não consegui confirmar que é o mesmo documento recebido (o Adobe pode ter regravado o arquivo).</span>
                     </div>
                   )}
+                  {pdf.conferencia === 'avulso' && (
+                    <div className="flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                      <span>Envio avulso: não há documento do app do aluno para comparar. Confira o paciente e o e-mail acima.</span>
+                    </div>
+                  )}
                   {!pdf.temAssinaturaDigital && (
                     <div className="flex items-start gap-1.5">
                       <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                      <span>Não encontrei uma assinatura digital nova neste PDF.</span>
+                      <span>Não encontrei uma assinatura digital {avulso ? '' : 'nova '}neste PDF.</span>
                     </div>
                   )}
                   <label className="flex items-start gap-2 cursor-pointer select-none font-semibold">
@@ -277,10 +284,12 @@ export const EnviarAssinadoPanel: React.FC<EnviarAssinadoPanelProps> = ({ docume
             </div>
           )}
 
-          <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer select-none">
-            <input type="checkbox" checked={automatico} onChange={(e) => alternarAutomatico(e.target.checked)} className="w-3.5 h-3.5 accent-emerald-700" />
-            Enviar automaticamente ao subir o PDF (só quando confere com o original e está assinado)
-          </label>
+          {!avulso && (
+            <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer select-none">
+              <input type="checkbox" checked={automatico} onChange={(e) => alternarAutomatico(e.target.checked)} className="w-3.5 h-3.5 accent-emerald-700" />
+              Enviar automaticamente ao subir o PDF (só quando confere com o original e está assinado)
+            </label>
+          )}
 
           <button
             type="button"

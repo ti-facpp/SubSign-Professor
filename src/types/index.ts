@@ -38,7 +38,8 @@ export interface EventoHistorico {
 // Como o PDF assinado se compara ao original recebido do app do aluno.
 //  identico:  o arquivo começa exatamente com os bytes do original (assinatura do Adobe "por cima").
 //  divergente: o Adobe regravou o arquivo; não dá para provar que é o mesmo documento.
-export type ConferenciaPdf = 'identico' | 'divergente';
+//  avulso:    enviado pelo professor sem documento do app do aluno; não há original para comparar.
+export type ConferenciaPdf = 'identico' | 'divergente' | 'avulso';
 
 export interface PdfAssinado {
   nomeArquivo: string;
@@ -54,9 +55,10 @@ export interface PdfAssinado {
 
 export type StatusDocumento = 'aguardando_assinatura' | 'enviado' | 'falha_parcial';
 
-// Documento recebido do app do aluno, na caixa de uma disciplina.
+// Documento na caixa de uma disciplina: recebido do app do aluno ou enviado avulso pelo professor.
 export interface Documento {
   id: string;
+  origem?: 'app_aluno' | 'avulso'; // ausente = app_aluno
   idExterno?: string;
   numero?: string;
   tipo?: string;
@@ -65,7 +67,7 @@ export interface Documento {
   disciplinaNome: string;
   pacienteNome: string;
   pacienteEmail: string;
-  alunoNome: string;
+  alunoNome: string; // pode ser vazio no avulso
   alunoRa?: string;
   nomeArquivo: string;
   tamanhoBytes: number;

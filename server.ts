@@ -156,7 +156,7 @@ function htmlDocumentoAssinado(doc: Documento, nomeDestinatario: string): string
       <table style="border-collapse:collapse;font-size:14px">
         ${doc.numero ? linha('Documento', doc.numero) : ''}
         ${linha('Paciente', doc.pacienteNome)}
-        ${linha('Aluno', doc.alunoNome)}
+        ${doc.alunoNome ? linha('Aluno', doc.alunoNome) : ''}
         ${linha('Disciplina', doc.disciplinaNome)}
         ${linha('Assinado por', doc.pdfAssinado?.enviadoPor ?? '')}
         ${linha('Data do envio', formatarDataHora(new Date().toISOString()))}
@@ -493,6 +493,109 @@ app.get('/api/documentos/:id/destinos', exigirSessao, (req: Request, res: Respon
   res.json({ destinos, avisos, ...estadoEmail() });
 });
 
+// Cabeçalho de texto enviado com encodeURIComponent (nomes com acento).
+function cabecalho(req: Request, nome: string, max: number): string {
+  const bruto = req.headers[nome];
+  if (typeof bruto !== 'string' || !bruto) return '';
+  try {
+    return texto(decodeURIComponent(bruto), max);
+  } catch {
+    return '';
+  }
+}
+
+function nomeArquivoPdf(req: Request): string {
+  const nome = path.basename(cabecalho(req, 'x-nome-arquivo', 200) || 'documento-assinado.pdf').replace(/[\\/:*?"<>|]/g, '_');
+  return /\.pdf$/i.test(nome) ? nome : `${nome}.pdf`;
+}
+
+// Valida o corpo binário de um upload de PDF; responde o erro e devolve null quando não serve.
+async function lerPdfEnviado(req: Request, res: Response): Promise<{ dados: Buffer; totalPaginas: number } | null> {
+  const dados: unknown = req.body;
+  if (!Buffer.isBuffer(dados) || dados.length === 0) {
+    res.status(400).json({ error: 'Nenhum arquivo PDF recebido.' });
+    return null;
+  }
+  if (dados.subarray(0, 1024).indexOf('%PDF-') === -1) {
+    res.status(415).json({ error: 'O arquivo enviado não é um PDF válido.' });
+    return null;
+  }
+  try {
+    return { dados, totalPaginas: (await PDFDocument.load(dados, { ignoreEncryption: true })).getPageCount() };
+  } catch {
+    res.status(422).json({ error: 'Não foi possível ler o PDF. O arquivo pode estar corrompido.' });
+    return null;
+  }
+}
+
+// Envio avulso: o professor sobe um PDF já assinado no Adobe sem que o documento tenha vindo do
+// app do aluno, e informa o paciente. Vira um documento normal da disciplina da sessão; como não
+// há original para comparar, o envio sempre pede a confirmação "Conferi" do professor.
+app.post(
+  '/api/documentos/avulso',
+  exigirSessao,
+  express.raw({ type: 'application/pdf', limit: TAMANHO_MAXIMO_PDF }),
+  async (req: Request, res: Response) => {
+    const sessao = (req as any).sessao as Sessao;
+    const pacienteNome = cabecalho(req, 'x-paciente-nome', 150);
+    const pacienteEmail = cabecalho(req, 'x-paciente-email', 254).toLowerCase();
+    if (pacienteNome.length < 2) return res.status(422).json({ error: 'Informe o nome do paciente.' });
+    if (!emailValido(pacienteEmail)) return res.status(422).json({ error: 'Informe um e-mail válido do paciente.' });
+
+    const pdf = await lerPdfEnviado(req, res);
+    if (!pdf) return;
+    const { dados, totalPaginas } = pdf;
+
+    const nomeArquivo = nomeArquivoPdf(req);
+    const agora = new Date().toISOString();
+    const temAssinaturaDigital = contarOcorrencias(dados, '/ByteRange') > 0;
+    const doc: Documento = {
+      id: `doc-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      origem: 'avulso',
+      numero: cabecalho(req, 'x-numero', 60) || undefined,
+      recebidoEm: agora,
+      disciplinaEmail: sessao.disciplinaEmail,
+      disciplinaNome: sessao.disciplinaNome,
+      pacienteNome,
+      pacienteEmail,
+      alunoNome: cabecalho(req, 'x-aluno-nome', 150),
+      nomeArquivo,
+      tamanhoBytes: dados.length,
+      totalPaginas,
+      hashSha256: sha256(dados),
+      lido: true,
+      status: 'aguardando_assinatura',
+      pdfAssinado: {
+        nomeArquivo,
+        tamanhoBytes: dados.length,
+        totalPaginas,
+        hashSha256: sha256(dados),
+        dataUpload: agora,
+        enviadoPor: `${sessao.professor} (${sessao.disciplinaNome})`,
+        conferencia: 'avulso',
+        temAssinaturaDigital,
+      },
+      historico: [],
+    };
+    evento(
+      doc,
+      sessao.professor,
+      'PDF assinado enviado avulso',
+      `${nomeArquivo} (${totalPaginas} pág.). Paciente ${pacienteNome} <${pacienteEmail}> informado pelo professor; assinatura digital: ${temAssinaturaDigital ? 'sim' : 'não encontrada'}.`
+    );
+
+    // Sem original do aluno: o próprio PDF assinado serve de "original" para baixar/visualizar.
+    fs.writeFileSync(caminhoOriginal(doc.id), dados);
+    fs.writeFileSync(caminhoAssinado(doc.id), dados);
+    documentosDb.push(doc);
+    salvarIndice();
+
+    const { avisos } = resolverDestinos(doc);
+    if (!temAssinaturaDigital) avisos.push('Não encontrei assinatura digital neste PDF. Confira se ele foi assinado antes de enviar.');
+    res.status(201).json({ sucesso: true, documento: doc, avisos });
+  }
+);
+
 // O professor sobe o PDF assinado no Adobe (corpo binário; nome no cabeçalho X-Nome-Arquivo).
 // Os bytes são guardados exatamente como chegaram para não invalidar a assinatura.
 app.post(
@@ -504,35 +607,24 @@ app.post(
     if (!doc) return;
     const sessao = (req as any).sessao as Sessao;
 
-    const dados: unknown = req.body;
-    if (!Buffer.isBuffer(dados) || dados.length === 0) return res.status(400).json({ error: 'Nenhum arquivo PDF recebido.' });
-    if (dados.subarray(0, 1024).indexOf('%PDF-') === -1) return res.status(415).json({ error: 'O arquivo enviado não é um PDF válido.' });
-
-    let totalPaginas: number;
-    try {
-      totalPaginas = (await PDFDocument.load(dados, { ignoreEncryption: true })).getPageCount();
-    } catch {
-      return res.status(422).json({ error: 'Não foi possível ler o PDF. O arquivo pode estar corrompido.' });
-    }
+    const pdf = await lerPdfEnviado(req, res);
+    if (!pdf) return;
+    const { dados, totalPaginas } = pdf;
+    const avulso = doc.origem === 'avulso';
 
     const original = fs.readFileSync(caminhoOriginal(doc.id));
-    if (dados.equals(original)) {
+    if (!avulso && dados.equals(original)) {
       return res.status(422).json({ error: 'Este PDF é idêntico ao original recebido: ele ainda não foi assinado.' });
     }
 
-    const identico = dados.length >= original.length && dados.subarray(0, original.length).equals(original);
-    const temAssinaturaDigital = contarOcorrencias(dados, '/ByteRange') > contarOcorrencias(original, '/ByteRange');
-
-    let nomeArquivo = 'documento-assinado.pdf';
-    try {
-      const bruto = req.headers['x-nome-arquivo'];
-      if (typeof bruto === 'string' && bruto) nomeArquivo = path.basename(decodeURIComponent(bruto)).slice(0, 200);
-    } catch {
-      // mantém o nome padrão
-    }
-    if (!/\.pdf$/i.test(nomeArquivo)) nomeArquivo += '.pdf';
+    const identico = !avulso && dados.length >= original.length && dados.subarray(0, original.length).equals(original);
+    const temAssinaturaDigital = avulso
+      ? contarOcorrencias(dados, '/ByteRange') > 0
+      : contarOcorrencias(dados, '/ByteRange') > contarOcorrencias(original, '/ByteRange');
+    const nomeArquivo = nomeArquivoPdf(req);
 
     fs.writeFileSync(caminhoAssinado(doc.id), dados);
+    if (avulso) fs.writeFileSync(caminhoOriginal(doc.id), dados);
     doc.pdfAssinado = {
       nomeArquivo,
       tamanhoBytes: dados.length,
@@ -540,19 +632,21 @@ app.post(
       hashSha256: sha256(dados),
       dataUpload: new Date().toISOString(),
       enviadoPor: `${sessao.professor} (${sessao.disciplinaNome})`,
-      conferencia: identico ? 'identico' : 'divergente',
+      conferencia: avulso ? 'avulso' : identico ? 'identico' : 'divergente',
       temAssinaturaDigital,
     };
     evento(
       doc,
       sessao.professor,
       'PDF assinado recebido',
-      `${nomeArquivo} (${totalPaginas} pág.). Conferência com o original: ${identico ? 'idêntico' : 'divergente'}; assinatura digital nova: ${temAssinaturaDigital ? 'sim' : 'não'}.`
+      avulso
+        ? `${nomeArquivo} (${totalPaginas} pág.). Envio avulso; assinatura digital: ${temAssinaturaDigital ? 'sim' : 'não encontrada'}.`
+        : `${nomeArquivo} (${totalPaginas} pág.). Conferência com o original: ${identico ? 'idêntico' : 'divergente'}; assinatura digital nova: ${temAssinaturaDigital ? 'sim' : 'não'}.`
     );
     salvarIndice();
 
     const avisos: string[] = [];
-    if (!identico) {
+    if (!avulso && !identico) {
       avisos.push(
         `Não consegui confirmar que este PDF é o mesmo documento recebido (o Adobe pode ter regravado o arquivo). Confira se é do paciente ${doc.pacienteNome}.`
       );
@@ -560,7 +654,7 @@ app.post(
     if (!temAssinaturaDigital) {
       avisos.push('Não encontrei uma assinatura digital nova neste PDF. Confira se ele foi assinado antes de enviar.');
     }
-    res.status(201).json({ sucesso: true, pdfAssinado: doc.pdfAssinado, avisos, requerConfirmacao: avisos.length > 0 });
+    res.status(201).json({ sucesso: true, pdfAssinado: doc.pdfAssinado, avisos, requerConfirmacao: avulso || avisos.length > 0 });
   }
 );
 
@@ -575,7 +669,7 @@ app.post('/api/documentos/:id/enviar', exigirSessao, async (req: Request, res: R
   if (enviosEmAndamento.has(doc.id)) return res.status(409).json({ error: 'O envio deste documento já está em andamento.' });
 
   const { confirmarConferencia, confirmarReenvio } = req.body || {};
-  if ((pdf.conferencia === 'divergente' || !pdf.temAssinaturaDigital) && confirmarConferencia !== true) {
+  if ((pdf.conferencia !== 'identico' || !pdf.temAssinaturaDigital) && confirmarConferencia !== true) {
     return res.status(409).json({ error: 'Confirme que o PDF é do paciente correto e que está assinado.', precisaConfirmar: true });
   }
   if (pdf.dataEnvio && confirmarReenvio !== true) {
@@ -584,7 +678,12 @@ app.post('/api/documentos/:id/enviar', exigirSessao, async (req: Request, res: R
 
   const { destinos } = resolverDestinos(doc);
   if (!destinos.some((d) => d.papel === 'paciente' && d.valido)) {
-    return res.status(422).json({ error: 'O documento não tem e-mail válido do paciente. Peça ao aluno para reenviar pelo app.' });
+    return res.status(422).json({
+      error:
+        doc.origem === 'avulso'
+          ? 'O documento não tem e-mail válido do paciente.'
+          : 'O documento não tem e-mail válido do paciente. Peça ao aluno para reenviar pelo app.',
+    });
   }
 
   enviosEmAndamento.add(doc.id);
