@@ -20,6 +20,7 @@ import {
   Filter,
 } from 'lucide-react';
 import { EmailNotificacaoRecebida, ProfessorProfile, Prontuario } from '../types/index.ts';
+import { EnviarAssinadoPanel } from './EnviarAssinadoPanel.tsx';
 
 interface CaixaEmailViewProps {
   currentProfessor: ProfessorProfile | null;
@@ -29,6 +30,8 @@ interface CaixaEmailViewProps {
   onOpenOfficialDoc: (prontuario: Prontuario) => void;
   onSelectProntuario: (prontuario: Prontuario) => void;
   onOpenSimulator: () => void;
+  onProntuarioAtualizado: () => void;
+  onToast: (text: string, type?: 'success' | 'info' | 'error') => void;
 }
 
 export const CaixaEmailView: React.FC<CaixaEmailViewProps> = ({
@@ -39,6 +42,8 @@ export const CaixaEmailView: React.FC<CaixaEmailViewProps> = ({
   onOpenOfficialDoc,
   onSelectProntuario,
   onOpenSimulator,
+  onProntuarioAtualizado,
+  onToast,
 }) => {
   const [emails, setEmails] = useState<EmailNotificacaoRecebida[]>([]);
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
@@ -549,6 +554,17 @@ export const CaixaEmailView: React.FC<CaixaEmailViewProps> = ({
                       </button>
                     )}
                   </div>
+
+                  {/* Subir o PDF assinado no Adobe e enviar para os 3 destinos certos */}
+                  {linkedProntuario && linkedProntuario.status !== 'rejeitado_ajustes' && (
+                    <EnviarAssinadoPanel
+                      key={linkedProntuario.id}
+                      prontuarioId={linkedProntuario.id}
+                      professor={currentProfessor}
+                      onAtualizado={onProntuarioAtualizado}
+                      onToast={onToast}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -570,7 +586,7 @@ export const CaixaEmailView: React.FC<CaixaEmailViewProps> = ({
                       O aluno já efetuou sua assinatura no app móvel <code className="text-emerald-800">subsign.facpp.edu.br</code>.
                     </li>
                     <li>
-                      Ao confirmar a assinatura digital via Certisign ICP-Brasil, o prontuário será carimbado com carimbo do tempo oficial e disparado aos e-mails do aluno, paciente e arquivo.
+                      Ao confirmar a assinatura digital via Certisign ICP-Brasil, o prontuário será carimbado com carimbo do tempo oficial e disparado aos e-mails do paciente, do aluno e da coordenação da disciplina.
                     </li>
                   </ul>
                 </div>

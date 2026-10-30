@@ -166,7 +166,7 @@ export default function App() {
         method: 'POST',
       });
       if (!res.ok) throw new Error('Falha ao disparar e-mails');
-      showToast('Prontuário reenviado com sucesso para os 4 e-mails cadastrados.');
+      showToast('Prontuário reenviado com sucesso para os 3 destinatários (paciente, aluno e coordenação).');
       await refreshAll();
       if (selectedProntuario?.id === id) {
         const updated = await fetch(`/api/prontuarios/${id}`).then((r) => r.json());
@@ -231,6 +231,11 @@ export default function App() {
             onOpenOfficialDoc={(p) => setOfficialDocProntuario(p)}
             onSelectProntuario={(p) => setSelectedProntuario(p)}
             onOpenSimulator={() => setIsSimulatorOpen(true)}
+            onProntuarioAtualizado={() => {
+              fetchProntuarios();
+              if (currentProfessor?.email) fetchEmailStats(currentProfessor.email);
+            }}
+            onToast={showToast}
           />
         )}
 

@@ -39,7 +39,7 @@ export const CertisignSignModal: React.FC<CertisignSignModalProps> = ({
     'Validando cadeia criptográfica e status de revogação OCSP',
     'Requisitando Carimbo do Tempo (ACT Certisign)',
     'Gravando assinatura digital com certificado e-CPF',
-    'Despachando prontuário assinado aos 4 e-mails cadastrados',
+    'Despachando prontuário assinado ao paciente, ao aluno e à coordenação',
   ];
 
   const handleSign = async () => {
@@ -168,7 +168,7 @@ export const CertisignSignModal: React.FC<CertisignSignModalProps> = ({
                 <Send className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <div className="text-[11px] leading-relaxed">
                   <strong>Despacho Automatizado:</strong> Ao assinar, o prontuário será enviado imediatamente para{' '}
-                  <strong>{prontuario.aluno.email}</strong>, <strong>{prontuario.paciente.email}</strong>, Coordenação e SAME.
+                  <strong>{prontuario.paciente.email || 'e-mail do paciente não cadastrado'}</strong> (paciente), <strong>{prontuario.aluno.email}</strong> (aluno) e coordenação da disciplina.
                 </div>
               </div>
 
@@ -252,7 +252,7 @@ export const CertisignSignModal: React.FC<CertisignSignModalProps> = ({
                   Prontuário Assinado & Despachado com Sucesso!
                 </h4>
                 <p className="text-xs text-slate-600 max-w-sm">
-                  A assinatura digital ICP-Brasil foi aplicada com carimbo do tempo ACT Certisign e enviada aos 4 e-mails cadastrados.
+                  A assinatura digital ICP-Brasil foi aplicada com carimbo do tempo ACT Certisign e enviada ao paciente, ao aluno e à coordenação da disciplina.
                 </p>
               </div>
 
@@ -271,13 +271,12 @@ export const CertisignSignModal: React.FC<CertisignSignModalProps> = ({
               <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-800 space-y-1">
                 <strong>Status de Envio de E-mails:</strong>
                 <p>
-                  ✓ Aluno: {signedResult.aluno.email} (Entregue)
-                  <br />
-                  ✓ Paciente: {signedResult.paciente.email} (Entregue)
-                  <br />
-                  ✓ Coordenação Clínica FACPP (Entregue)
-                  <br />
-                  ✓ SAME - Arquivo Geral (Entregue)
+                  {signedResult.envioEmails.destinatarios.map((d) => (
+                    <React.Fragment key={d.id}>
+                      {d.status === 'falha' ? '✗' : '✓'} {d.email || d.nome} ({d.status === 'falha' ? `Falhou: ${d.erroMotivo}` : 'Entregue'})
+                      <br />
+                    </React.Fragment>
+                  ))}
                 </p>
               </div>
             </div>

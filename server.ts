@@ -17,6 +17,7 @@ import {
   EmailNotificacaoRecebida,
   DocumentoPdf,
 } from './src/types/index.ts';
+import { resolverDestinos, emailValido, emailCoordenacaoDaDisciplina } from './destinos.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -63,8 +64,13 @@ function escaparHtml(texto: string): string {
     .replace(/"/g, '&quot;');
 }
 
+interface AnexoEmail {
+  filename: string;
+  path: string;
+}
+
 // Nunca lança: o resultado vira o status do destinatário.
-async function enviarEmail(para: string, assunto: string, html: string): Promise<ResultadoEnvio> {
+async function enviarEmail(para: string, assunto: string, html: string, anexos: AnexoEmail[] = []): Promise<ResultadoEnvio> {
   if (!transporter) {
     return { ok: true, mensagemId: `MSG-SIMULADO-${Date.now()}` };
   }
@@ -77,7 +83,13 @@ async function enviarEmail(para: string, assunto: string, html: string): Promise
     : '';
 
   try {
-    const info = await transporter.sendMail({ from: emailRemetente, to: destino, subject: assuntoFinal, html: aviso + html });
+    const info = await transporter.sendMail({
+      from: emailRemetente,
+      to: destino,
+      subject: assuntoFinal,
+      html: aviso + html,
+      attachments: anexos.map((a) => ({ filename: a.filename, path: a.path, contentType: 'application/pdf' })),
+    });
     return { ok: true, mensagemId: info.messageId };
   } catch (err) {
     const erro = err instanceof Error ? err.message : String(err);
@@ -86,13 +98,15 @@ async function enviarEmail(para: string, assunto: string, html: string): Promise
   }
 }
 
-function htmlProntuarioAssinado(p: Prontuario, nomeDestinatario: string): string {
+function htmlProntuarioAssinado(p: Prontuario, nomeDestinatario: string, comAnexo = false): string {
   const a = p.assinaturaCertisign;
   return `
     <div style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px">
       <h2 style="color:#047857">Prontuário assinado digitalmente</h2>
       <p>Olá, ${escaparHtml(nomeDestinatario)}.</p>
-      <p>O prontuário abaixo foi validado pelo docente supervisor e assinado digitalmente.</p>
+      <p>O prontuário abaixo foi validado pelo docente supervisor e assinado digitalmente.${
+        comAnexo ? ' O PDF assinado segue em anexo.' : ''
+      }</p>
       <table style="border-collapse:collapse;font-size:14px">
         <tr><td style="padding:4px 12px 4px 0"><b>Prontuário</b></td><td>${escaparHtml(p.numeroProntuario)}</td></tr>
         <tr><td style="padding:4px 12px 4px 0"><b>Paciente</b></td><td>${escaparHtml(p.paciente.nome)}</td></tr>
@@ -127,8 +141,13 @@ function assuntoProntuario(p: Prontuario): string {
   return `Prontuário ${p.numeroProntuario} assinado digitalmente — FACPP`;
 }
 
-async function enviarParaDestinatario(dest: EmailDestinatario, assunto: string, html: string): Promise<void> {
-  const resultado = await enviarEmail(dest.email, assunto, html);
+async function enviarParaDestinatario(
+  dest: EmailDestinatario,
+  assunto: string,
+  html: string,
+  anexos: AnexoEmail[] = []
+): Promise<void> {
+  const resultado = await enviarEmail(dest.email, assunto, html, anexos);
   dest.tentativas += 1;
   dest.dataHoraEnvio = new Date().toISOString();
   if (resultado.ok) {
@@ -798,28 +817,49 @@ let prontuariosDb: Prontuario[] = [
 syncEmailsForProfessor('martins1987@gmail.com');
 syncEmailsForProfessor('marcos.silveira@facpp.edu.br');
 
-// Despacho dos e-mails do prontuário assinado aos 4 destinatários padrão
+// PDF assinado (no Adobe) que o professor subiu de volta para este prontuário.
+// Fica em disco em DATA_DIR/assinados/<id>.pdf; o registro fica em prontuario.pdfAssinado.
+function caminhoPdfAssinado(prontuarioId: string): string {
+  return path.join(ASSINADOS_DIR, `${prontuarioId.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`);
+}
+
+function anexosDoProntuario(p: Prontuario): AnexoEmail[] {
+  if (!p.pdfAssinado) return [];
+  const caminho = caminhoPdfAssinado(p.id);
+  return fs.existsSync(caminho) ? [{ filename: p.pdfAssinado.nomeArquivo, path: caminho }] : [];
+}
+
+// Despacho dos e-mails do prontuário assinado: paciente (e-mail do próprio prontuário),
+// aluno e coordenação da disciplina. Se houver PDF assinado enviado pelo professor, vai em anexo.
 async function dispararEmailsProntuario(prontuario: Prontuario): Promise<Prontuario> {
   const agora = new Date().toISOString();
+  const anexos = anexosDoProntuario(prontuario);
+  const { destinos } = resolverDestinos(prontuario);
 
-  const novoDestinatario = (sufixo: string, papel: EmailDestinatario['papel'], nome: string, email: string): EmailDestinatario => ({
-    id: `dest-${prontuario.id}-${sufixo}`,
-    papel,
-    nome,
-    email,
+  const destinatarios: EmailDestinatario[] = destinos.map((d) => ({
+    id: `dest-${prontuario.id}-${d.papel === 'coordenacao' ? 'coord' : d.papel}`,
+    papel: d.papel,
+    nome: d.nome,
+    email: d.email,
     status: 'pendente',
     tentativas: 0,
-  });
-
-  const destinatarios: EmailDestinatario[] = [
-    novoDestinatario('aluno', 'aluno', prontuario.aluno.nome, prontuario.aluno.email),
-    novoDestinatario('paciente', 'paciente', prontuario.paciente.nome, prontuario.paciente.email),
-    novoDestinatario('coord', 'coordenacao', `Coordenação Clínica - ${prontuario.disciplina}`, 'clinica.odontologia@facpp.edu.br'),
-    novoDestinatario('same', 'same_arquivo', 'SAME - Arquivo Central de Prontuários FACPP', 'same.prontuarios@facpp.edu.br'),
-  ];
+  }));
 
   await Promise.all(
-    destinatarios.map((d) => enviarParaDestinatario(d, assuntoProntuario(prontuario), htmlProntuarioAssinado(prontuario, d.nome)))
+    destinatarios.map(async (d, i) => {
+      // Endereço ausente/inválido nunca chega ao SMTP: vira falha visível para reenviar depois de corrigir.
+      if (!destinos[i].valido) {
+        d.status = 'falha';
+        d.erroMotivo = d.email ? `Endereço de e-mail inválido: ${d.email}` : 'Endereço de e-mail ausente';
+        return;
+      }
+      await enviarParaDestinatario(
+        d,
+        assuntoProntuario(prontuario),
+        htmlProntuarioAssinado(prontuario, d.nome, anexos.length > 0),
+        anexos
+      );
+    })
   );
 
   const falhas = destinatarios.filter((d) => d.status === 'falha');
@@ -836,7 +876,7 @@ async function dispararEmailsProntuario(prontuario: Prontuario): Promise<Prontua
     acao: 'Disparo de E-mails com Prontuário Assinado',
     detalhes:
       falhas.length === 0
-        ? `Despacho concluído para 4 e-mails cadastrados: Aluno (${prontuario.aluno.email}), Paciente (${prontuario.paciente.email}), Coordenação e SAME.`
+        ? `Despacho concluído para ${destinatarios.length} e-mails: ${destinatarios.map((d) => `${d.papel} (${d.email})`).join(', ')}${anexos.length > 0 ? ' — com o PDF assinado em anexo' : ''}.`
         : `Despacho com ${falhas.length} falha(s): ${falhas.map((d) => `${d.email} (${d.erroMotivo})`).join('; ')}.`,
   });
 
@@ -1049,7 +1089,7 @@ app.post('/api/prontuarios/:id/enviar-emails', async (req: Request, res: Respons
     sucesso: true,
     mensagem:
       atualizado.envioEmails.statusGeral === 'concluido'
-        ? 'E-mails despachados com sucesso para os 4 destinatários registrados.'
+        ? `E-mails despachados com sucesso para os ${atualizado.envioEmails.destinatarios.length} destinatários.`
         : 'Houve falha no envio de parte dos e-mails. Use o reenvio individual.',
     envioEmails: atualizado.envioEmails,
   });
@@ -1064,15 +1104,15 @@ app.post('/api/emails/:destinatarioId/reenviar', async (req: Request, res: Respo
     return res.status(404).json({ error: 'Destinatário não localizado' });
   }
 
-  const html =
-    p.status === 'rejeitado_ajustes' && p.motivoRejeicao
-      ? htmlProntuarioDevolvido(p, p.motivoRejeicao)
-      : htmlProntuarioAssinado(p, dest.nome);
-  const assunto =
-    p.status === 'rejeitado_ajustes'
-      ? `Prontuário ${p.numeroProntuario} devolvido para correção — FACPP`
-      : assuntoProntuario(p);
-  await enviarParaDestinatario(dest, assunto, html);
+  const devolvido = p.status === 'rejeitado_ajustes' && p.motivoRejeicao;
+  const anexos = devolvido ? [] : anexosDoProntuario(p);
+  const html = devolvido
+    ? htmlProntuarioDevolvido(p, p.motivoRejeicao as string)
+    : htmlProntuarioAssinado(p, dest.nome, anexos.length > 0);
+  const assunto = devolvido
+    ? `Prontuário ${p.numeroProntuario} devolvido para correção — FACPP`
+    : assuntoProntuario(p);
+  await enviarParaDestinatario(dest, assunto, html, anexos);
 
   if (p.envioEmails.destinatarios.every((d) => d.status !== 'falha')) {
     p.envioEmails.statusGeral = 'concluido';
@@ -1209,12 +1249,20 @@ app.post('/api/prontuarios/novo-recebido', (req: Request, res: Response) => {
   const count = prontuariosDb.length + 1;
   const formattedCount = String(count + 840).padStart(4, '0');
 
+  // O e-mail do paciente vem do prontuário do aluno e NÃO tem valor padrão: se faltar, o envio é
+  // bloqueado até alguém informar o endereço certo (antes caía num Gmail genérico).
+  const disciplinaRecebida = body.disciplina || 'Clínica Odontológica Integrada IV';
+  const pacienteEmailRecebido = typeof body.pacienteEmail === 'string' ? body.pacienteEmail.trim() : '';
+  const coordenacaoEmailRecebido = emailValido(body.coordenacaoEmail)
+    ? body.coordenacaoEmail.trim()
+    : emailCoordenacaoDaDisciplina(disciplinaRecebida);
+
   const novoProntuario: Prontuario = {
     id: `prt-${Date.now()}`,
     numeroProntuario: body.numeroProntuario || `FACPP-ODON-2026-${formattedCount}`,
     dataAtendimento: body.dataAtendimento || new Date().toISOString().split('T')[0],
     horaAtendimento: body.horaAtendimento || '14:00',
-    disciplina: body.disciplina || 'Clínica Odontológica Integrada IV',
+    disciplina: disciplinaRecebida,
     boxClinico: body.boxClinico || 'Box 07 - Clínica Escola',
     paciente: {
       nome: body.pacienteNome || 'Novo Paciente Cadastrado',
@@ -1223,7 +1271,7 @@ app.post('/api/prontuarios/novo-recebido', (req: Request, res: Response) => {
       dataNascimento: body.pacienteNascimento || '1995-04-10',
       idade: body.pacienteIdade || 31,
       telefone: body.pacienteTelefone || '(18) 99700-1122',
-      email: body.pacienteEmail || 'paciente.clinica@gmail.com',
+      email: pacienteEmailRecebido,
       sexo: body.pacienteSexo || 'F',
       endereco: body.pacienteEndereco || 'Rua das Flores, 100 - Presidente Prudente/SP',
     },
@@ -1272,23 +1320,15 @@ app.post('/api/prontuarios/novo-recebido', (req: Request, res: Response) => {
           id: `dest-${Date.now()}-pac`,
           papel: 'paciente',
           nome: body.pacienteNome || 'Novo Paciente Cadastrado',
-          email: body.pacienteEmail || 'paciente.clinica@gmail.com',
+          email: pacienteEmailRecebido,
           status: 'pendente',
           tentativas: 0,
         },
         {
           id: `dest-${Date.now()}-coo`,
           papel: 'coordenacao',
-          nome: 'Coordenação Clínica FACPP',
-          email: 'clinica.odontologia@facpp.edu.br',
-          status: 'pendente',
-          tentativas: 0,
-        },
-        {
-          id: `dest-${Date.now()}-sam`,
-          papel: 'same_arquivo',
-          nome: 'SAME - Arquivo Médico & Odontológico FACPP',
-          email: 'same.prontuarios@facpp.edu.br',
+          nome: `Coordenação - ${disciplinaRecebida}`,
+          email: coordenacaoEmailRecebido,
           status: 'pendente',
           tentativas: 0,
         },
@@ -1495,7 +1535,10 @@ const DOCS_DIR = path.join(DATA_DIR, 'documentos');
 const DOCS_INDICE = path.join(DATA_DIR, 'documentos.json');
 const TAMANHO_MAXIMO_PDF = 25 * 1024 * 1024;
 
+const ASSINADOS_DIR = path.join(DATA_DIR, 'assinados');
+
 fs.mkdirSync(DOCS_DIR, { recursive: true });
+fs.mkdirSync(ASSINADOS_DIR, { recursive: true });
 
 let documentosDb: DocumentoPdf[] = [];
 try {
@@ -1786,6 +1829,177 @@ app.delete('/api/documentos/:id', (req: Request, res: Response) => {
   salvarIndiceDocumentos();
 
   res.json({ sucesso: true, mensagem: `"${doc.nomeOriginal}" excluído.` });
+});
+
+// --- PDF assinado no Adobe: sobe de volta no e-mail de origem e sai para os 3 destinos certos ---
+// Fluxo: o e-mail chega -> o professor baixa e assina no Adobe -> sobe o PDF assinado AQUI, no
+// próprio e-mail/prontuário -> o app já sabe o paciente (e-mail do prontuário), o aluno e a
+// coordenação da disciplina, e envia o PDF assinado em anexo. Os bytes do PDF são guardados
+// exatamente como chegaram (não passam por carimbarPdf) para não invalidar a assinatura do Adobe.
+function estadoEmail() {
+  return {
+    smtpAtivo: Boolean(transporter),
+    modoTeste: Boolean(transporter && emailRedirecionarPara),
+    redirecionarPara: transporter && emailRedirecionarPara ? emailRedirecionarPara : null,
+  };
+}
+
+const enviosAssinadosEmAndamento = new Set<string>();
+
+app.get('/api/email/estado', (_req: Request, res: Response) => {
+  res.json(estadoEmail());
+});
+
+// 21. Destinos que o envio vai usar (para o professor conferir antes de enviar)
+app.get('/api/prontuarios/:id/destinos-envio', (req: Request, res: Response) => {
+  const p = prontuariosDb.find((x) => x.id === req.params.id);
+  if (!p) return res.status(404).json({ error: 'Prontuário não encontrado' });
+  const { destinos, avisos } = resolverDestinos(p);
+  res.json({ destinos, avisos, pdfAssinado: p.pdfAssinado || null, ...estadoEmail() });
+});
+
+// 22. Receber o PDF assinado (corpo binário; nome no cabeçalho X-Nome-Arquivo)
+app.post(
+  '/api/prontuarios/:id/pdf-assinado',
+  express.raw({ type: 'application/pdf', limit: TAMANHO_MAXIMO_PDF }),
+  async (req: Request, res: Response) => {
+    const p = prontuariosDb.find((x) => x.id === req.params.id);
+    if (!p) return res.status(404).json({ error: 'Prontuário não encontrado' });
+
+    const dados: unknown = req.body;
+    if (!Buffer.isBuffer(dados) || dados.length === 0) {
+      return res.status(400).json({ error: 'Nenhum arquivo PDF recebido.' });
+    }
+    if (dados.subarray(0, 1024).indexOf('%PDF-') === -1) {
+      return res.status(415).json({ error: 'O arquivo enviado não é um PDF válido.' });
+    }
+
+    let totalPaginas: number;
+    try {
+      totalPaginas = (await PDFDocument.load(dados, { ignoreEncryption: true })).getPageCount();
+    } catch {
+      return res.status(422).json({ error: 'Não foi possível ler o PDF. O arquivo pode estar corrompido.' });
+    }
+
+    const decodificar = (valor: unknown, padrao: string) => {
+      try {
+        return typeof valor === 'string' && valor ? decodeURIComponent(valor) : padrao;
+      } catch {
+        return padrao;
+      }
+    };
+    let nomeArquivo = path.basename(decodificar(req.headers['x-nome-arquivo'], 'prontuario-assinado.pdf')).slice(0, 200);
+    if (!/\.pdf$/i.test(nomeArquivo)) nomeArquivo += '.pdf';
+
+    const avisos: string[] = [];
+    const alnum = (t: string) => t.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    if (!alnum(nomeArquivo).includes(alnum(p.numeroProntuario))) {
+      avisos.push(
+        `O nome do arquivo não contém o número do prontuário (${p.numeroProntuario}). Confira se é o documento do paciente ${p.paciente.nome}.`
+      );
+    }
+
+    fs.writeFileSync(caminhoPdfAssinado(p.id), dados);
+    p.pdfAssinado = {
+      nomeArquivo,
+      tamanhoBytes: dados.length,
+      totalPaginas,
+      hashSha256: sha256(dados),
+      dataUpload: new Date().toISOString(),
+      enviadoPor: decodificar(req.headers['x-enviado-por'], 'Professor não identificado').slice(0, 200),
+    };
+    p.historico.push({
+      id: `evt-${Date.now()}-pdfassinado`,
+      dataHora: p.pdfAssinado.dataUpload,
+      autor: p.pdfAssinado.enviadoPor,
+      acao: 'PDF assinado recebido do docente',
+      detalhes: `${nomeArquivo} (${totalPaginas} pág., SHA-256 ${p.pdfAssinado.hashSha256.slice(0, 16)}…).`,
+    });
+
+    const { destinos, avisos: avisosDestino } = resolverDestinos(p);
+    res.status(201).json({
+      sucesso: true,
+      pdfAssinado: p.pdfAssinado,
+      destinos,
+      avisos: [...avisos, ...avisosDestino],
+      ...estadoEmail(),
+    });
+  }
+);
+
+// 23. Enviar o PDF assinado para paciente, aluno e coordenação da disciplina
+app.post('/api/prontuarios/:id/enviar-assinado', async (req: Request, res: Response) => {
+  const p = prontuariosDb.find((x) => x.id === req.params.id);
+  if (!p) return res.status(404).json({ error: 'Prontuário não encontrado' });
+  if (!p.pdfAssinado || !fs.existsSync(caminhoPdfAssinado(p.id))) {
+    return res.status(409).json({ error: 'Suba o PDF assinado antes de enviar.' });
+  }
+  if (enviosAssinadosEmAndamento.has(p.id)) {
+    return res.status(409).json({ error: 'O envio deste prontuário já está em andamento.' });
+  }
+
+  const { pacienteEmail, confirmarReenvio } = req.body || {};
+  if (p.pdfAssinado.dataEnvio && confirmarReenvio !== true) {
+    return res.status(409).json({
+      error: `Este PDF já foi enviado em ${formatarDataHora(p.pdfAssinado.dataEnvio)}. Confirme para enviar novamente.`,
+      jaEnviado: true,
+    });
+  }
+
+  // Correção do e-mail do paciente (prontuário veio sem e-mail ou com e-mail errado).
+  if (pacienteEmail !== undefined) {
+    if (!emailValido(pacienteEmail)) {
+      return res.status(400).json({ error: 'O e-mail do paciente informado não é válido.', precisaEmailPaciente: true });
+    }
+    const novo = pacienteEmail.trim();
+    if (novo.toLowerCase() !== (p.paciente.email || '').trim().toLowerCase()) {
+      p.historico.push({
+        id: `evt-${Date.now()}-emailpac`,
+        dataHora: new Date().toISOString(),
+        autor: p.pdfAssinado.enviadoPor,
+        acao: 'E-mail do paciente corrigido antes do envio',
+        detalhes: `${p.paciente.email || '(vazio)'} → ${novo}`,
+      });
+      p.paciente.email = novo;
+    }
+  }
+
+  const paciente = resolverDestinos(p).destinos.find((d) => d.papel === 'paciente');
+  if (!paciente || !paciente.valido) {
+    return res.status(422).json({
+      error: 'O prontuário não tem um e-mail válido do paciente. Informe o endereço correto para enviar.',
+      precisaEmailPaciente: true,
+    });
+  }
+
+  enviosAssinadosEmAndamento.add(p.id);
+  try {
+    p.status = 'assinado_certisign';
+    delete p.motivoRejeicao;
+    emailsRecebidosDb.forEach((m) => {
+      if (m.prontuarioId === p.id) {
+        m.anexoPdf.statusAssinatura = 'assinado_certisign';
+        m.anexoPdf.hashSha256 = p.pdfAssinado!.hashSha256;
+      }
+    });
+
+    await dispararEmailsProntuario(p);
+
+    if (p.envioEmails.destinatarios.some((d) => d.status !== 'falha')) {
+      p.pdfAssinado.dataEnvio = new Date().toISOString();
+    }
+    const falhas = p.envioEmails.destinatarios.filter((d) => d.status === 'falha');
+    res.json({
+      sucesso: falhas.length === 0,
+      mensagem:
+        falhas.length === 0
+          ? `PDF assinado enviado para ${p.envioEmails.destinatarios.length} destinatários.`
+          : `Enviado, mas ${falhas.length} destinatário(s) falharam: ${falhas.map((d) => d.email || d.papel).join(', ')}.`,
+      prontuario: p,
+    });
+  } finally {
+    enviosAssinadosEmAndamento.delete(p.id);
+  }
 });
 
 // Upload maior que o limite: devolve JSON em vez da página de erro do Express.

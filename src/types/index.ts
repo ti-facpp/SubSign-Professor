@@ -85,6 +85,25 @@ export interface AuditoriaEvento {
   ip?: string;
 }
 
+// PDF que o professor assinou fora (Adobe) e subiu de volta para este prontuário.
+export interface PdfAssinadoProntuario {
+  nomeArquivo: string;
+  tamanhoBytes: number;
+  totalPaginas: number;
+  hashSha256: string;
+  dataUpload: string;
+  enviadoPor: string;
+  dataEnvio?: string; // preenchido quando os e-mails saíram com este PDF
+}
+
+// Para quem o prontuário assinado vai ser enviado (resolvido a partir do próprio prontuário).
+export interface DestinoEnvio {
+  papel: 'paciente' | 'aluno' | 'coordenacao';
+  nome: string;
+  email: string;
+  valido: boolean;
+}
+
 export interface Prontuario {
   id: string;
   numeroProntuario: string;
@@ -99,6 +118,7 @@ export interface Prontuario {
   status: 'aguardando_validacao' | 'assinado_certisign' | 'rejeitado_ajustes';
   motivoRejeicao?: string;
   assinaturaCertisign?: AssinaturaCertisign;
+  pdfAssinado?: PdfAssinadoProntuario;
   envioEmails: {
     statusGeral: 'pendente' | 'em_processamento' | 'concluido' | 'falha_parcial';
     dataDisparo?: string;

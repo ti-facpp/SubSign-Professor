@@ -172,7 +172,7 @@ export const BatchSignModal: React.FC<BatchSignModalProps> = ({
                   <span>Despacho Concluído</span>
                 </div>
                 <p>
-                  Todos os e-mails dos alunos, pacientes, coordenação e SAME foram disparados automaticamente com os recibos criptográficos e documentos anexados.
+                  Os e-mails dos pacientes, alunos e coordenações das disciplinas foram disparados automaticamente com os recibos criptográficos e documentos anexados.
                 </p>
               </div>
             </div>
