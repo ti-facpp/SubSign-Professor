@@ -367,7 +367,6 @@ app.post('/api/recebimento', async (req: Request, res: Response) => {
   const alunoNome = texto(b.alunoNome, 150);
   const pacienteEmail = texto(b.pacienteEmail, 254).toLowerCase();
   if (pacienteNome.length < 2) return res.status(422).json({ error: 'pacienteNome é obrigatório.' });
-  if (alunoNome.length < 2) return res.status(422).json({ error: 'alunoNome é obrigatório.' });
   if (!emailValido(pacienteEmail)) return res.status(422).json({ error: 'pacienteEmail ausente ou inválido.' });
 
   const idExterno = texto(b.idExterno, 100) || undefined;
@@ -411,7 +410,7 @@ app.post('/api/recebimento', async (req: Request, res: Response) => {
     status: 'aguardando_assinatura',
     historico: [],
   };
-  evento(doc, `${alunoNome} (app do aluno)`, 'Documento recebido', `Paciente ${pacienteNome} <${pacienteEmail}>, disciplina ${disciplina.nome}.`);
+  evento(doc, alunoNome ? `${alunoNome} (app do aluno)` : 'App do aluno', 'Documento recebido', `Paciente ${pacienteNome} <${pacienteEmail}>, disciplina ${disciplina.nome}.`);
 
   fs.writeFileSync(caminhoOriginal(doc.id), dados);
   documentosDb.push(doc);

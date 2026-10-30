@@ -27,7 +27,7 @@ Content-Type: application/json
   "disciplinaEmail": "clinica.integrada2@facpp.edu.br",  // exatamente um dos 13 e-mails
   "pacienteNome": "Fulana de Tal",
   "pacienteEmail": "fulana@exemplo.com",
-  "alunoNome": "Ciclano",
+  "alunoNome": "Ciclano",                           // opcional
   "alunoRa": "202301988",                           // opcional
   "numero": "FPD-0001",                             // opcional
   "tipo": "Tipo 1",                                 // opcional
