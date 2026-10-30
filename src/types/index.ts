@@ -1,68 +1,11 @@
-export interface Paciente {
-  nome: string;
-  cpf: string;
-  rg?: string;
-  dataNascimento: string;
-  idade: number;
-  telefone: string;
+export interface Disciplina {
   email: string;
-  sexo: 'M' | 'F' | 'Outro';
-  endereco?: string;
-  responsavelLegal?: string;
-  emailResponsavel?: string;
-}
-
-export interface Aluno {
   nome: string;
-  ra: string;
-  email: string;
-  semestre: string;
-  curso: string;
-  assinaturaData: string;
-  assinaturaHash: string;
-  ipOrigem: string;
-  dispositivo: string;
 }
 
-export interface Professor {
-  nome: string;
-  matricula: string;
-  cpf: string;
-  cro_crm: string;
-  email: string;
-}
+export type EmailPapel = 'paciente' | 'coordenacao' | 'prontuario';
 
-export interface DadosClinicos {
-  queixaPrincipal: string;
-  anamneseResumida: string;
-  diagnostico: string;
-  cid10_cfo: string;
-  procedimentoRealizado: string;
-  materiaisUtilizados: string;
-  prescricaoMedicamentosa?: string;
-  recomendacoesPosOperatorias?: string;
-  proximoRetorno?: string;
-  observacoesSupervisor?: string;
-}
-
-export interface AssinaturaCertisign {
-  assinado: boolean;
-  dataAssinatura: string;
-  autoridadeCertificadora: string;
-  titularCertificado: string;
-  cpfTitular: string;
-  numeroSerieCertificado: string;
-  algoritmoAssinatura: string;
-  hashDocumento: string;
-  carimboTempoACT: string;
-  politicaAssinatura: string;
-  statusCertificado: 'VALIDO' | 'REVOGADO' | 'EXPIRADO';
-  codigoVerificacao: string;
-}
-
-export type EmailPapel = 'aluno' | 'paciente' | 'coordenacao' | 'same_arquivo';
-
-export type EmailStatus = 'pendente' | 'enviado' | 'entregue' | 'aberto' | 'falha';
+export type EmailStatus = 'pendente' | 'entregue' | 'falha';
 
 export interface EmailDestinatario {
   id: string;
@@ -76,164 +19,83 @@ export interface EmailDestinatario {
   erroMotivo?: string;
 }
 
-export interface AuditoriaEvento {
+// Para quem o documento assinado vai ser enviado (resolvido a partir do próprio documento).
+export interface DestinoEnvio {
+  papel: EmailPapel;
+  nome: string;
+  email: string;
+  valido: boolean;
+}
+
+export interface EventoHistorico {
   id: string;
   dataHora: string;
   autor: string;
   acao: string;
   detalhes: string;
-  ip?: string;
 }
 
-// PDF que o professor assinou fora (Adobe) e subiu de volta para este prontuário.
-export interface PdfAssinadoProntuario {
+// Como o PDF assinado se compara ao original recebido do app do aluno.
+//  identico:  o arquivo começa exatamente com os bytes do original (assinatura do Adobe "por cima").
+//  divergente: o Adobe regravou o arquivo; não dá para provar que é o mesmo documento.
+export type ConferenciaPdf = 'identico' | 'divergente';
+
+export interface PdfAssinado {
   nomeArquivo: string;
   tamanhoBytes: number;
   totalPaginas: number;
   hashSha256: string;
   dataUpload: string;
   enviadoPor: string;
+  conferencia: ConferenciaPdf;
+  temAssinaturaDigital: boolean;
   dataEnvio?: string; // preenchido quando os e-mails saíram com este PDF
 }
 
-// Para quem o prontuário assinado vai ser enviado (resolvido a partir do próprio prontuário).
-export interface DestinoEnvio {
-  papel: 'paciente' | 'aluno' | 'coordenacao';
-  nome: string;
-  email: string;
-  valido: boolean;
-}
+export type StatusDocumento = 'aguardando_assinatura' | 'enviado' | 'falha_parcial';
 
-export interface Prontuario {
+// Documento recebido do app do aluno, na caixa de uma disciplina.
+export interface Documento {
   id: string;
-  numeroProntuario: string;
-  dataAtendimento: string;
-  horaAtendimento: string;
-  disciplina: string;
-  boxClinico: string;
-  paciente: Paciente;
-  aluno: Aluno;
-  professor: Professor;
-  dadosClinicos: DadosClinicos;
-  status: 'aguardando_validacao' | 'assinado_certisign' | 'rejeitado_ajustes';
-  motivoRejeicao?: string;
-  assinaturaCertisign?: AssinaturaCertisign;
-  pdfAssinado?: PdfAssinadoProntuario;
-  envioEmails: {
-    statusGeral: 'pendente' | 'em_processamento' | 'concluido' | 'falha_parcial';
-    dataDisparo?: string;
-    destinatarios: EmailDestinatario[];
-  };
-  historico: AuditoriaEvento[];
-}
-
-export interface CertisignConfig {
-  ambiente: 'homologacao' | 'producao';
-  apiUrl: string;
-  clientId: string;
-  clientSecret: string;
-  tipoCertificado: 'A1_REMOTA' | 'BIRD_ID' | 'CERTISIGN_HUB' | 'TOKEN_A3';
-  titularNome: string;
-  titularCpf: string;
-  cro_crm: string;
-  certificadoSerial: string;
-  dataValidade: string;
-  emissor: string;
-  carimboTempoAtivo: boolean;
-  autoridadeCarimbo: string;
-  statusConexao: 'conectado' | 'desconectado' | 'erro';
-  ultimoTeste: string;
-}
-
-export interface ItemRelatorio {
-  id: string;
-  numeroProntuario: string;
-  dataAtendimento: string;
+  idExterno?: string;
+  numero?: string;
+  tipo?: string;
+  recebidoEm: string;
+  disciplinaEmail: string;
+  disciplinaNome: string;
   pacienteNome: string;
   pacienteEmail: string;
   alunoNome: string;
-  alunoEmail: string;
-  disciplina: string;
-  statusProntuario: 'aguardando_validacao' | 'assinado_certisign' | 'rejeitado_ajustes';
-  assinadoCertisign: boolean;
-  dataAssinatura?: string;
-  hashCertisign?: string;
-  totalEmails: number;
-  emailsEntregues: number;
-  emailsFalhas: number;
-  statusEnvioGeral: 'pendente' | 'em_processamento' | 'concluido' | 'falha_parcial';
-  destinatarios: EmailDestinatario[];
-}
-
-export interface ProfessorProfile {
-  email: string;
-  nome: string;
-  departamento: string;
-  cro_crm: string;
-  matricula: string;
-  certificadoStatus: 'valido' | 'pendente';
-  avatarUrl?: string;
-  ultimoLogin?: string;
-}
-
-export interface EmailNotificacaoRecebida {
-  id: string;
-  destinatarioEmail: string;
-  remetente: string;
-  remetenteNome: string;
-  assunto: string;
-  dataRecebimento: string;
-  lido: boolean;
-  prontuarioId: string;
-  prontuarioNumero: string;
-  anexoPdf: {
-    nomeArquivo: string;
-    tamanhoBytes: number;
-    tamanhoFormatado: string;
-    hashSha256: string;
-    statusAssinatura: 'aguardando_validacao' | 'assinado_certisign' | 'rejeitado_ajustes';
-  };
-  corpoMensagem: string;
-  alunoNome: string;
-  alunoRa: string;
-  pacienteNome: string;
-  disciplina: string;
-}
-
-export interface RelatorioConsolidado {
-  resumo: {
-    totalProntuarios: number;
-    totalAssinados: number;
-    totalAguardando: number;
-    totalRejeitados: number;
-    totalEmailsDisparados: number;
-    totalEmailsEntregues: number;
-    totalEmailsAbertos: number;
-    totalEmailsFalhas: number;
-    taxaEntregaGeral: number;
-  };
-  itens: ItemRelatorio[];
-}
-
-// PDF avulso enviado pelo professor para assinatura (upload manual)
-export interface AssinaturaDocumento {
-  dataAssinatura: string;
-  signatarioNome: string;
-  signatarioEmail: string;
-  signatarioRegistro: string;
-  codigoVerificacao: string;
-  hashAssinado: string;
-  carimboTempoACT: string;
-}
-
-export interface DocumentoPdf {
-  id: string;
-  nomeOriginal: string;
+  alunoRa?: string;
+  nomeArquivo: string;
   tamanhoBytes: number;
   totalPaginas: number;
-  dataEnvio: string;
-  enviadoPor: string;
-  hashOriginal: string;
-  status: 'aguardando_assinatura' | 'assinado';
-  assinatura?: AssinaturaDocumento;
+  hashSha256: string;
+  lido: boolean;
+  status: StatusDocumento;
+  pdfAssinado?: PdfAssinado;
+  envio?: {
+    dataDisparo: string;
+    destinatarios: EmailDestinatario[];
+  };
+  historico: EventoHistorico[];
+}
+
+export interface Sessao {
+  token: string;
+  disciplinaEmail: string;
+  disciplinaNome: string;
+  professor: string;
+  expiraEm: string;
+}
+
+export interface EstadoEmail {
+  smtpAtivo: boolean;
+  modoTeste: boolean;
+  redirecionarPara: string | null;
+}
+
+export interface InfoEnvio extends EstadoEmail {
+  destinos: DestinoEnvio[];
+  avisos: string[];
 }

@@ -1,6 +1,5 @@
 {
   "name": "SubSign Professor - FACPP",
-  "description": "Portal do Docente para validação centralizada e assinatura digital ICP-Brasil via Certisign de prontuários clínicos da FACPP, com despacho automatizado por e-mail e relatórios consolidados de conformidade.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "description": "Portal do professor FACPP: recebe os documentos da disciplina e envia o PDF assinado ao paciente, à disciplina e a prontuarios@.",
+  "requestFramePermissions": []
 }
